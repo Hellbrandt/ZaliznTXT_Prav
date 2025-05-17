@@ -1,0 +1,1741 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+Comprehensive Zalizniak Dictionary Parser
+Полный парсер грамматического словаря русского языка А.А. Зализняка
+
+Обрабатывает файлы исходных данных словаря и создает структурированные выходные данные
+для использования в системах автоматической обработки русского языка.
+"""
+
+import os
+import re
+import logging
+import argparse
+from collections import defaultdict
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("parser.log", mode='w', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+
+logger = logging.getLogger("zalizniak_parser")
+
+class ComprehensiveZalizniakParser:
+    """
+    Парсер для обработки словаря Зализняка с поддержкой
+    всех типов записей: существительных, прилагательных, глаголов и имён собственных.
+    """
+    
+    def __init__(self, repo_path, output_dir):
+        self.repo_path = repo_path
+        self.output_dir = output_dir
+        
+        # Создаем выходную директорию, если она не существует
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        
+        # Инициализируем структуры для хранения данных
+        self.dict_data = []  # Основной словарь (существительные, прилагательные)
+        self.proper_names = []  # Имена собственные
+        self.verb_data = []  # Глаголы
+        self.special_forms = {}  # Специальные формы слов
+        self.conjugation_refs = {}  # Ссылки на спряжение глаголов
+        self.aspectual_pairs = {}  # Видовые пары глаголов
+        self.unknown_constructs = []  # Неизвестные конструкции
+        
+        self.previous_verb_line = None  # Для объединения многострочных описаний глаголов
+        self.verb_data_dict = {}  # Словарь для пост-обработки глаголов
+        
+    def parse_repo_files(self):
+        """Основной метод парсинга файлов из репозитория с поддержкой всех расширений."""
+        try:
+            # Находим все .txt файлы в репозитории
+            logger.info(f"Поиск файлов в {self.repo_path}")
+            txt_files = []
+            
+            for root, _, files in os.walk(self.repo_path):
+                for file in files:
+                    if file.endswith('.txt'):
+                        txt_files.append(os.path.join(root, file))
+            
+            if not txt_files:
+                logger.error(f"В репозитории {self.repo_path} не найдены текстовые файлы")
+                return False
+            
+            logger.info(f"Найдено {len(txt_files)} текстовых файлов")
+            
+            # Инициализируем словарь для хранения предыдущих строк глаголов
+            self.previous_verb_lines = {}
+            
+            # Обрабатываем каждый файл
+            for file_path in txt_files:
+                self.parse_verbs_with_extensions(file_path)
+            
+            # Постобработка для улучшения качества данных
+            self.process_aspectual_pairs()
+            self.handle_special_proper_name_cases()
+            
+            # Сохраняем результаты
+            self.save_all_data()
+            return True
+            
+        except Exception as e:
+            logger.error(f"Ошибка при обработке репозитория: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+    
+    def parse_verbs_with_extensions(self, file_path):
+        """
+        Комплексная функция для обработки всех типов глаголов, включая возвратные,
+        с поддержкой всех типов специальных помет.
+        """
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            logger.info(f"Обработка файла {file_path}, найдено {len(lines)} строк")
+            
+            # Инициализация для хранения продолжений строк
+            self.previous_verb_line = None
+            
+            i = 0
+            while i < len(lines):
+                line = lines[i].strip()
+                
+                # Пропускаем пустые строки
+                if not line:
+                    i += 1
+                    continue
+                
+                # Проверяем, является ли строка продолжением предыдущей
+                if line.startswith(("нсв", "св", "_")):
+                    if self.previous_verb_line:
+                        # Объединяем с предыдущей строкой
+                        combined_line = self.previous_verb_line + " " + line
+                        self.parse_verb_or_reflexive(combined_line, file_path, i)
+                        self.previous_verb_line = None
+                    else:
+                        # Это фрагмент без контекста, логируем как ошибку
+                        self.add_unknown_construct(line, file_path, i+1, "Фрагмент строки без контекста")
+                    
+                    i += 1
+                    continue
+                
+                # Обрабатываем строку как новый глагол или другой тип записи
+                if self.is_verb_line(line):
+                    if not self.parse_verb_or_reflexive(line, file_path, i+1):
+                        self.add_unknown_construct(line, file_path, i+1, "Строка не соответствует шаблону глагола")
+                    else:
+                        # Сохраняем для возможного объединения со следующей строкой
+                        self.previous_verb_line = line
+                elif "ё" in line and (line.endswith("ться") or line.endswith("тся")):
+                    # Возможно, это глагол с буквой "ё"
+                    if not self.parse_reflexive_verb(line, file_path, i+1):
+                        self.parse_other_line(line, file_path, i+1)
+                else:
+                    # Это не глагол, обрабатываем другими парсерами
+                    self.parse_other_line(line, file_path, i+1)
+                
+                i += 1
+            
+            # Пост-обработка для создания альтернативных форм и обработки ё/е
+            self.postprocess_verb_data()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Ошибка при обработке файла {file_path}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+
+    def parse_verb_or_reflexive(self, line, file_path, line_num):
+        """
+        Унифицированная функция для обработки обычных и возвратных глаголов.
+        """
+        words = line.split()
+        if not words:
+            return False
+        
+        first_word = words[0]
+        
+        # Проверяем, является ли глагол возвратным
+        if first_word.endswith("ся") or first_word.endswith("сь"):
+            return self.parse_reflexive_verb(line, file_path, line_num)
+        else:
+            return self.parse_verb_line_extended(line, file_path, line_num)
+
+    def postprocess_verb_data(self):
+        """
+        Выполняет пост-обработку данных о глаголах:
+        - Создает альтернативные формы
+        - Обрабатывает варианты с ё/е
+        - Добавляет видовые пары
+        """
+        # Преобразуем данные в словарь для удобства работы
+        self.verb_data_dict = {}
+        for entry in self.verb_data:
+            parts = entry.split('\t')
+            if len(parts) < 8:
+                continue
+                
+            verb = parts[0]
+            self.verb_data_dict[verb] = {
+                "verb": verb,
+                "index": parts[1],
+                "aspect": parts[2],
+                "semantic_info": parts[3],
+                "verb_with_stress": parts[5],
+                "note": parts[6],
+                "special_flags": parts[7]
+            }
+        
+        # Обработка альтернативных форм
+        for verb, entry in list(self.verb_data_dict.items()):
+            special_flags = entry.get("special_flags", "")
+            
+            # Извлекаем альтернативные формы
+            alt_form_matches = re.findall(r'альт_форма:([^;]+)', special_flags)
+            for alt_form in alt_form_matches:
+                self.add_alternative_verb_forms(verb, [alt_form])
+            
+            # Обработка ё/е вариантов
+            if "ё" in verb:
+                alt_entries = self.process_yo_in_verbs(
+                    verb, 
+                    entry.get("index", ""),
+                    entry.get("aspect", ""),
+                    entry.get("semantic_info", ""),
+                    special_flags.split("; ") if special_flags else []
+                )
+                
+                for alt_entry in alt_entries:
+                    alt_verb = alt_entry.get("verb", "")
+                    if alt_verb:
+                        self.verb_data_dict[alt_verb] = alt_entry
+        
+        # Преобразуем обратно в список для сохранения
+        self.verb_data = []
+        for verb, entry in self.verb_data_dict.items():
+            line = f"{entry['verb']}\t{entry['index']}\t{entry['aspect']}\t{entry['semantic_info']}\t\t{entry['verb_with_stress']}\t{entry['note']}\t{entry['special_flags']}\t"
+            self.verb_data.append(line)
+    
+    def parse_reflexive_verb(self, line, file_path, line_num):
+        """
+        Специализированный парсер для возвратных глаголов с аспектуальными кодами.
+        """
+        # Паттерн для возвратных глаголов с аспектуальными кодами
+        pattern = re.compile(
+            r'^([а-яА-ЯёЁ\-]+(?:ся|сь))\s+' +  # Глагол с окончанием "ся/сь"
+            r'(нсв|св|св-нсв)\s+' +            # Вид глагола
+            r'(?:(нп)\s+)?' +                   # Необязательная пометка "нп" (непереходный)
+            r'(\d+[a-zA-Z][\u2070\u00b0\*/⌧✕]*)' +  # Индекс спряжения с возможными спецсимволами
+            r'(?:\s+(◑\d+(?:\([^)]+\))?))?' +   # Аспектуальный код с возможными пояснениями
+            r'(?:\s+\[//(?:__)?([^_]+)(?:__)?\])?'  +  # Возможная альтернативная форма
+            r'(?:\s+\(_([^_]+)_(?::?\s*([^)]+))?\))?' +  # Возможное семантическое пояснение
+            r'\s*(.*)'                           # Оставшаяся часть строки
+        )
+        
+        match = pattern.match(line)
+        if not match:
+            return False
+        
+        groups = match.groups()
+        verb = groups[0]
+        aspect = groups[1]
+        is_intransitive = groups[2] == "нп" if groups[2] else False
+        index = groups[3]
+        aspectual_code = groups[4]
+        alternative_form = groups[5]
+        semantic_note = groups[6]
+        semantic_example = groups[7]
+        rest = groups[8]
+        
+        # Обработка глагола
+        verb_clean = self.remove_stress_marks(verb)
+        verb_with_stress = verb
+        
+        # Извлечение аспектуального кода
+        aspectual_code_value = ""
+        aspectual_pair = ""
+        if aspectual_code:
+            code_match = re.search(r'◑(\d+)', aspectual_code)
+            pair_match = re.search(r'\(([^)]+)\)', aspectual_code)
+            
+            if code_match:
+                aspectual_code_value = code_match.group(1)
+            
+            if pair_match:
+                aspectual_pair = pair_match.group(1)
+        
+        # Формирование семантического пояснения
+        semantic_info = ""
+        if semantic_note:
+            semantic_info = semantic_note
+            if semantic_example:
+                semantic_info += f": {semantic_example}"
+        
+        # Формирование специальных флагов
+        special_flags = ["возвратный"]
+        
+        if is_intransitive:
+            special_flags.append("непереходный")
+        
+        if aspectual_code_value:
+            special_flags.append(f"аспект_код:{aspectual_code_value}")
+        
+        if aspectual_pair:
+            special_flags.append(f"видовая_пара:{aspectual_pair}")
+            # Сохраняем информацию о видовой паре для дальнейшего использования
+            self.aspectual_pairs[verb_clean] = aspectual_pair
+        
+        if alternative_form:
+            special_flags.append(f"альт_форма:{alternative_form}")
+        
+        # Проверка на дополнительные строки
+        continuation_line = False
+        if rest.startswith("нсв") or rest.startswith("св"):
+            # Эта строка содержит дополнительную информацию о глаголе
+            continuation_line = True
+            # Сохраняем для последующей обработки
+            self.previous_verb_line = line
+        
+        # Создаем запись для словаря
+        special_flags_str = "; ".join(special_flags)
+        
+        # Формируем запись для словаря глаголов
+        verb_entry = f"{verb_clean}\t{index}\t{aspect}\t{semantic_info}\t\t{verb_with_stress}\t\t{special_flags_str}\t"
+        
+        # Добавляем в словарь глаголов
+        self.verb_data.append(verb_entry)
+        
+        # Обрабатываем случаи с буквой "ё"
+        if "ё" in verb:
+            # Создаем альтернативную запись с "е" вместо "ё"
+            alt_verb = verb.replace("ё", "е")
+            alt_verb_clean = self.remove_stress_marks(alt_verb)
+            
+            special_flags.append("альт_е_ё")
+            special_flags_str = "; ".join(special_flags)
+            
+            alt_entry = f"{alt_verb_clean}\t{index}\t{aspect}\t{semantic_info}\t\t{alt_verb}\tальтернативное написание\t{special_flags_str}\t"
+            self.verb_data.append(alt_entry)
+        
+        return True
+    
+    def parse_verb_line_extended(self, line, file_path, line_num):
+        """
+        Расширенный парсер для глаголов со сложными пометами и индексами.
+        """
+        # Проверяем на продолжение предыдущей строки
+        if line.strip().startswith('_') or line.strip().startswith('нсв') or line.strip().startswith('св'):
+            # Обрабатываем как продолжение предыдущей строки
+            return self.handle_continued_line(line, file_path, line_num)
+        
+        # Расширенный паттерн для глаголов с поддержкой всех форматов индексов и аспектуальных кодов
+        pattern = re.compile(
+            r'^([а-яА-ЯёЁ\-]+(?:ся|сь)?)\s+' +  # Глагол с возможным "ся/сь"
+            r'(нсв|св|св-нсв|нп|нсв\s*нп|св\s*нп)\s*' +  # Вид глагола и возможная пометка "нп"
+            r'(?:,\s*)?' +  # Возможная запятая перед индексом
+            r'(?:(\d+[a-zA-Z]' +  # Основная часть индекса
+            r'(?:[④⑦①②]|\[(?:④|⑦|①|②)\])?' +  # Возможные надстрочные индексы и индексы в скобках
+            r'(?:\/[a-zA-Z])?' +  # Возможный дробный индекс
+            r'(?:\/\/[^◑\s,]+)?)' +  # Возможный альтернативный индекс через //
+            r')?' +  # Индекс необязателен
+            r'(?:,\s*(безл\.))?' +  # Возможная помета "безл."
+            r'(?:,\s*(многокр\.))?' +  # Возможная помета "многокр."
+            r'(?:\s+(◑[IVX]+(?:\([^)]+\))?))?'  +  # Аспектуальный код с римскими цифрами
+            r'(.*)'  # Остаток строки с пояснениями
+        )
+        
+        match = pattern.match(line)
+        if not match:
+            # Пробуем другой паттерн для глаголов
+            pattern_alt = re.compile(
+                r'^([а-яА-ЯёЁ\-]+(?:ся|сь)?)\s+' +  # Глагол
+                r'(нсв|св|св-нсв|нп|нсв\s*нп|св\s*нп)\s*' +  # Вид глагола
+                r'(?:(\d+[a-zA-Z][\u2070\u00b0\*/⌧✕]*))?' +  # Индекс спряжения
+                r'(?:\s+(◑\d+(?:\([^)]+\))?))?' +  # Аспектуальный код с арабскими цифрами
+                r'(.*)'  # Остаток строки
+            )
+            
+            match = pattern_alt.match(line)
+            if not match:
+                self.add_unknown_construct(line, file_path, line_num, "Строка не соответствует расширенному шаблону глагола")
+                return False
+        
+        verb, aspect_info, index, is_impersonal, iterativity, aspectual_code, rest = match.groups()
+        
+        # Обработка глагола
+        verb_clean = self.remove_stress_marks(verb)
+        verb_with_stress = verb
+        is_reflexive = verb.endswith("ся") or verb.endswith("сь")
+        
+        # Разделяем аспект и пометку "нп" (непереходный)
+        is_intransitive = False
+        aspect = aspect_info
+        if "нп" in aspect_info:
+            is_intransitive = True
+            aspect = aspect_info.replace("нп", "").strip()
+        
+        # Обработка индекса
+        if index:
+            # Сохраняем первоначальный индекс для справки
+            original_index = index
+            
+            # Извлекаем основной индекс, исключая надстрочные знаки и дроби
+            basic_index = re.match(r'(\d+[a-zA-Z])', index).group(1) if index else ""
+            
+            # Проверяем наличие дробного индекса
+            fractional_part = ""
+            if "/" in index and not "//" in index:
+                fractional_part = index.split("/")[1]
+            
+            # Проверяем наличие альтернативного индекса
+            alternative_index = ""
+            if "//" in index:
+                alternative_index = index.split("//")[1]
+            
+            # Ищем надстрочные индексы и индексы в квадратных скобках
+            superscript_index = ""
+            superscript_match = re.search(r'([④⑦①②]|\[(?:④|⑦|①|②)\])', index)
+            if superscript_match:
+                superscript_index = superscript_match.group(1).replace("[", "").replace("]", "")
+                
+                # Сопоставляем юникодные надстрочные индексы с числами
+                if superscript_index == "①":
+                    superscript_index = "1"
+                elif superscript_index == "②":
+                    superscript_index = "2"
+                elif superscript_index == "④":
+                    superscript_index = "4"
+                elif superscript_index == "⑦":
+                    superscript_index = "7"
+        else:
+            basic_index = ""
+            original_index = ""
+            fractional_part = ""
+            alternative_index = ""
+            superscript_index = ""
+        
+        # Обработка аспектуальных кодов с римскими цифрами
+        aspectual_code_value = ""
+        aspectual_note = ""
+        if aspectual_code:
+            # Извлекаем римскую цифру
+            roman_match = re.search(r'◑([IVX]+)', aspectual_code)
+            if roman_match:
+                roman = roman_match.group(1)
+                # Преобразуем римскую цифру в арабскую
+                if roman == "I":
+                    aspectual_code_value = "1"
+                elif roman == "II":
+                    aspectual_code_value = "2"
+                elif roman == "III":
+                    aspectual_code_value = "3"
+                elif roman == "IV":
+                    aspectual_code_value = "4"
+                elif roman == "V":
+                    aspectual_code_value = "5"
+                else:
+                    aspectual_code_value = roman
+            else:
+                # Если это не римская цифра, пробуем арабскую
+                arabic_match = re.search(r'◑(\d+)', aspectual_code)
+                if arabic_match:
+                    aspectual_code_value = arabic_match.group(1)
+            
+            # Извлекаем примечание в скобках, если есть
+            note_match = re.search(r'\(([^)]+)\)', aspectual_code)
+            if note_match:
+                aspectual_note = note_match.group(1)
+        
+        # Обработка семантических пояснений
+        semantic_notes = []
+        sem_matches = re.findall(r'\(_([^_]+)_(?::?\s*([^)]+))?\)', rest)
+        for sem_match in sem_matches:
+            note = sem_match[0]
+            examples = sem_match[1] if len(sem_match) > 1 and sem_match[1] else ""
+            
+            if examples:
+                semantic_note = f"{note}: {examples}"
+            else:
+                semantic_note = note
+            
+            semantic_notes.append(semantic_note)
+        
+        # Обработка устаревших форм
+        obsolete_forms = []
+        obsolete_match = re.search(r'//_устар\._\s+([^,]+)', rest)
+        if obsolete_match:
+            obsolete_forms.append(obsolete_match.group(1))
+        
+        # Обработка коллокаций (устойчивых выражений)
+        collocations = []
+        collocation_match = re.search(r':\s+([^.]+)', rest)
+        if collocation_match:
+            collocations.append(collocation_match.group(1).strip())
+        
+        # Создаем дополнительные метки
+        special_flags = []
+        
+        if is_reflexive:
+            special_flags.append("возвратный")
+        
+        if is_intransitive:
+            special_flags.append("непереходный")
+        
+        if is_impersonal:
+            special_flags.append("безличный")
+        
+        if iterativity:
+            special_flags.append("многократный")
+        
+        if fractional_part:
+            special_flags.append(f"дробный_индекс:{fractional_part}")
+        
+        if alternative_index:
+            special_flags.append(f"альт_индекс:{alternative_index}")
+        
+        if superscript_index:
+            special_flags.append(f"надстрочный_индекс:{superscript_index}")
+        
+        if aspectual_code_value:
+            special_flags.append(f"аспект_код:{aspectual_code_value}")
+        
+        if aspectual_note:
+            special_flags.append(f"аспект_примечание:{aspectual_note}")
+            
+            # Сохраняем информацию о видовой паре
+            if aspectual_code_value:
+                self.aspectual_pairs[verb_clean] = aspectual_note
+        
+        if obsolete_forms:
+            special_flags.append(f"устаревшая_форма:{'; '.join(obsolete_forms)}")
+        
+        if collocations:
+            special_flags.append(f"коллокация:{'; '.join(collocations)}")
+        
+        # Формируем запись для словаря глаголов
+        semantic_notes_str = "; ".join(semantic_notes)
+        special_flags_str = "; ".join(special_flags)
+        
+        # Создаем итоговую запись
+        verb_entry = f"{verb_clean}\t{basic_index}\t{aspect}\t{semantic_notes_str}\t\t{verb_with_stress}\t\t{special_flags_str}\t"
+        
+        # Добавляем в словарь глаголов
+        self.verb_data.append(verb_entry)
+        
+        # Обрабатываем случаи с буквой "ё"
+        if "ё" in verb:
+            # Создаем альтернативную запись с "е" вместо "ё"
+            alt_verb = verb.replace("ё", "е")
+            alt_verb_clean = self.remove_stress_marks(alt_verb)
+            
+            special_flags.append("альт_е_ё")
+            special_flags_str = "; ".join(special_flags)
+            
+            alt_entry = f"{alt_verb_clean}\t{basic_index}\t{aspect}\t{semantic_notes_str}\t\t{alt_verb}\tальтернативное написание\t{special_flags_str}\t"
+            self.verb_data.append(alt_entry)
+        
+        return True
+
+    def handle_continued_line(self, line, file_path, line_num):
+        """
+        Обрабатывает строки, являющиеся продолжением предыдущей строки глагола.
+        """
+        # Проверяем, есть ли предыдущая строка для объединения
+        if hasattr(self, 'previous_verb_line') and self.previous_verb_line:
+            # Объединяем с предыдущей строкой
+            combined_line = self.previous_verb_line + " " + line.strip()
+            # Сбрасываем предыдущую строку
+            self.previous_verb_line = None
+            # Обрабатываем объединенную строку
+            return self.parse_verb_line_extended(combined_line, file_path, line_num)
+        else:
+            # Нет предыдущей строки для объединения
+            self.add_unknown_construct(line, file_path, line_num, "Фрагмент строки без контекста")
+            return False
+
+    def parse_aspectual_code(self, code_str):
+        """
+        Разбирает аспектуальный код и извлекает значение и дополнительные параметры.
+        """
+        result = {
+            "code": "",        # Числовое значение кода (4, 5, 11 и т.д.)
+            "pair": "",        # Видовая пара, указанная в скобках
+            "original": code_str # Оригинальная строка кода
+        }
+        
+        if not code_str:
+            return result
+        
+        # Извлекаем числовой код
+        code_match = re.search(r'◑(\d+)', code_str)
+        if code_match:
+            result["code"] = code_match.group(1)
+        
+        # Извлекаем видовую пару
+        pair_match = re.search(r'\(([^)]+)\)', code_str)
+        if pair_match:
+            result["pair"] = pair_match.group(1)
+        
+        return result
+
+    def convert_roman_to_arabic(self, roman):
+        """
+        Преобразует римские цифры в аспектуальных кодах в арабские.
+        """
+        roman_values = {
+            'I': 1,
+            'V': 5,
+            'X': 10,
+            'L': 50,
+            'C': 100,
+            'D': 500,
+            'M': 1000
+        }
+        
+        # Для простых римских цифр (I, II, III, IV, V) используем прямое соответствие
+        if roman in ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"]:
+            # Специальная обработка для часто встречающихся римских цифр
+            if roman == "I": return "1"
+            if roman == "II": return "2"
+            if roman == "III": return "3"
+            if roman == "IV": return "4"
+            if roman == "V": return "5"
+            if roman == "VI": return "6"
+            if roman == "VII": return "7"
+            if roman == "VIII": return "8"
+            if roman == "IX": return "9"
+            if roman == "X": return "10"
+        
+        # Для более сложных чисел используем алгоритм преобразования
+        result = 0
+        previous = 0
+        
+        for char in reversed(roman):
+            if char not in roman_values:
+                return roman  # Если встретили неизвестный символ, возвращаем исходную строку
+                
+            current = roman_values[char]
+            if current >= previous:
+                result += current
+            else:
+                result -= current
+            previous = current
+        
+        return str(result)
+
+    def process_yo_in_verbs(self, verb, index, aspect, semantic_info, special_flags):
+        """
+        Создает альтернативные записи для глаголов с буквой "ё".
+        """
+        # Проверяем наличие буквы "ё" в глаголе
+        if "ё" not in verb:
+            return []
+        
+        # Создаем альтернативную запись с "е" вместо "ё"
+        alt_verb = verb.replace("ё", "е")
+        alt_verb_clean = self.remove_stress_marks(alt_verb)
+        
+        # Добавляем специальный флаг
+        special_flags_copy = special_flags.copy()
+        special_flags_copy.append("альт_е_ё")
+        special_flags_str = "; ".join(special_flags_copy)
+        
+        # Формируем запись для словаря
+        alt_entry = {
+            "verb": alt_verb_clean,
+            "index": index,
+            "aspect": aspect,
+            "semantic_info": semantic_info,
+            "verb_with_stress": alt_verb,
+            "note": "альтернативное написание",
+            "special_flags": special_flags_str
+        }
+        
+        return [alt_entry]
+    
+    def parse_alternative_forms(self, text):
+        """
+        Извлекает альтернативные формы глаголов, указанные в квадратных скобках.
+        """
+        alternative_forms = []
+        
+        # Поиск форм типа [//текст]
+        matches = re.findall(r'\[//(?:__)?\s*([^_\]]+)(?:__)?\s*\]', text)
+        for match in matches:
+            alternative_forms.append(match.strip())
+        
+        # Поиск форм типа [//_устар._ текст]
+        matches = re.findall(r'\[//_устар\._\s+([^_\]]+)\s*\]', text)
+        for match in matches:
+            alternative_forms.append(f"{match.strip()} (устар.)")
+        
+        return alternative_forms
+
+    def add_alternative_verb_forms(self, verb, alt_forms):
+        """
+        Добавляет альтернативные формы глагола в словарь.
+        """
+        if not alt_forms:
+            return
+        
+        # Проверяем, есть ли глагол в словаре
+        if verb not in self.verb_data_dict:
+            return
+        
+        # Получаем основную запись глагола
+        base_entry = self.verb_data_dict[verb]
+        
+        # Для каждой альтернативной формы создаем запись
+        for alt_form in alt_forms:
+            is_obsolete = "(устар.)" in alt_form
+            clean_form = alt_form.replace(" (устар.)", "")
+            
+            # Очищаем от знаков ударения
+            alt_form_clean = self.remove_stress_marks(clean_form)
+            
+            # Копируем основные данные из базовой записи
+            alt_entry = base_entry.copy()
+            alt_entry["verb"] = alt_form_clean
+            alt_entry["verb_with_stress"] = clean_form
+            
+            # Добавляем пометку об устаревшей форме
+            if is_obsolete:
+                alt_entry["note"] += "; устаревшая форма"
+                if "special_flags" in alt_entry:
+                    alt_entry["special_flags"] += "; устаревшая_форма"
+                else:
+                    alt_entry["special_flags"] = "устаревшая_форма"
+            
+            # Добавляем альтернативную форму в словарь
+            self.verb_data_dict[alt_form_clean] = alt_entry
+      
+    def parse_complex_index(self, index_str):
+        """
+        Разбирает сложные индексы спряжения с дробными частями, 
+        надстрочными индексами и альтернативными вариантами.
+        """
+        result = {
+            "base_index": "",     # Основной индекс (например, 4c)
+            "superscript": "",    # Надстрочный индекс (например, ④)
+            "fractional": "",     # Дробная часть (например, c в 16b/c)
+            "alternative": "",    # Альтернативный индекс (например, 4b в 4c//4b)
+            "original": index_str # Оригинальный индекс для справки
+        }
+        
+        # Если пустая строка, возвращаем пустой результат
+        if not index_str:
+            return result
+        
+        # Извлекаем основной индекс (числа и первая буква)
+        base_match = re.match(r'(\d+[a-zA-Z])', index_str)
+        if base_match:
+            result["base_index"] = base_match.group(1)
+        
+        # Ищем надстрочный индекс
+        superscript_map = {
+            "①": "1", "②": "2", "③": "3", "④": "4", 
+            "⑤": "5", "⑥": "6", "⑦": "7", "⑧": "8", "⑨": "9"
+        }
+        
+        for unicode_super, arabic in superscript_map.items():
+            if unicode_super in index_str:
+                result["superscript"] = arabic
+                break
+        
+        # Если нет юникодного надстрочного индекса, проверяем индекс в скобках
+        if not result["superscript"]:
+            bracket_match = re.search(r'\[([④⑦①②\d])\]', index_str)
+            if bracket_match:
+                super_char = bracket_match.group(1)
+                if super_char in superscript_map:
+                    result["superscript"] = superscript_map[super_char]
+                else:
+                    result["superscript"] = super_char
+        
+        # Извлекаем дробную часть
+        if "/" in index_str and not "//" in index_str:
+            parts = index_str.split("/")
+            if len(parts) > 1:
+                result["fractional"] = parts[1].split("[")[0]  # Берем только до скобки, если есть
+        
+        # Извлекаем альтернативный индекс
+        if "//" in index_str:
+            parts = index_str.split("//")
+            if len(parts) > 1:
+                result["alternative"] = parts[1]
+        
+        return result
+
+    def get_conjugation_info(self, verb, index_data):
+        """
+        Возвращает информацию о спряжении глагола на основе разобранного индекса.
+        """
+        if not index_data["base_index"]:
+            return "Неизвестный тип спряжения"
+        
+        # Определяем основной тип спряжения по первой цифре в индексе
+        base_type = index_data["base_index"][0]
+        conjugation_type = ""
+        
+        if base_type == "1":
+            conjugation_type = "Первое спряжение"
+        elif base_type == "4":
+            conjugation_type = "Смешанное спряжение"
+        elif base_type == "5":
+            conjugation_type = "Особое спряжение"
+        elif base_type == "6":
+            conjugation_type = "Смешанное спряжение"
+        elif base_type == "7":
+            conjugation_type = "Чередующееся спряжение"
+        elif base_type == "8":
+            conjugation_type = "Смешанное спряжение с чередованием"
+        elif base_type == "9":
+            conjugation_type = "Особое спряжение"
+        elif base_type == "1" and len(index_data["base_index"]) > 1 and index_data["base_index"][1] == "6":
+            conjugation_type = "Специальное спряжение"  # Для индекса 16
+        else:
+            conjugation_type = "Другой тип спряжения"
+        
+        # Добавляем информацию о подклассе и особенностях
+        if index_data["superscript"]:
+            conjugation_type += f" (подкласс {index_data['superscript']})"
+        
+        if index_data["fractional"]:
+            conjugation_type += f" с вариантом {index_data['fractional']}"
+        
+        if index_data["alternative"]:
+            conjugation_type += f" (альт. {index_data['alternative']})"
+        
+        return conjugation_type
+    
+    def get_aspectual_pair(self, verb, code, pair_info):
+        """
+        Определяет видовую пару глагола по аспектуальному коду и дополнительной информации.
+        """
+        # Если есть явное указание пары, используем его
+        if pair_info:
+            # Очистка от дополнительных символов
+            clean_pair = re.sub(r'^[-]+|[-]+$', '', pair_info)
+            
+            # Обработка особых случаев с "-о-", "-а-" и т.д.
+            if clean_pair in ["-о-", "-а-", "-и-", "-ну-", "-оя-"]:
+                # Это указание на замену части глагола
+                if clean_pair == "-о-":
+                    return verb.replace("аива", "о").replace("яива", "о")
+                elif clean_pair == "-а-":
+                    return verb.replace("ива", "а")
+                elif clean_pair == "-и-":
+                    return verb.replace("ива", "и")
+                elif clean_pair == "-ну-":
+                    return verb.replace("гива", "ну").replace("ява", "ну")
+                elif clean_pair == "-оя-":
+                    return verb.replace("аива", "оя").replace("таива", "тоя")
+            else:
+                # Конкретная видовая пара
+                return clean_pair
+        
+        # Определение по коду и структуре глагола
+        if code == "1":
+            # Часто для глаголов на -ивать/-ывать
+            if "ивать" in verb:
+                return verb.replace("ивать", "ить")
+            elif "ывать" in verb:
+                return verb.replace("ывать", "ать")
+        
+        elif code == "3":
+            # Для глаголов с заменой на -нуть
+            if "гивать" in verb:
+                return verb.replace("гивать", "нуть")
+        
+        elif code == "4":
+            # Часто для глаголов на -ивать/-оить
+            if "раивать" in verb:
+                return verb.replace("раивать", "роить")
+            elif "таивать" in verb:
+                return verb.replace("таивать", "тоить")
+            elif "клеивать" in verb:
+                return verb.replace("клеивать", "клеить")
+        
+        elif code == "5":
+            # Для глаголов с особым чередованием
+            if "стаивать" in verb:
+                return verb.replace("стаивать", "стоять")
+        
+        elif code == "6":
+            # Часто для глаголов с удалением -ва-
+            if "еивать" in verb:
+                return verb.replace("еивать", "еять")
+            elif "чаивать" in verb:
+                return verb.replace("чаивать", "чаять")
+        
+        elif code == "11":
+            # Для глаголов на -вать с заменой на -ть
+            if "бивать" in verb:
+                return verb.replace("бивать", "бить")
+            elif "вивать" in verb:
+                return verb.replace("вивать", "вить")
+        
+        elif code == "16":
+            # Для глаголов с корнем -жив-
+            if "живать" in verb:
+                return verb.replace("живать", "жить")
+        
+        # Если не смогли определить конкретную пару
+        return ""
+
+    def get_aspect_pair_by_roman_code(self, verb, roman_code, note=""):
+        """
+        Определяет видовую пару глагола по римскому коду аспекта.
+        """
+        # Если есть конкретная информация о паре, используем её
+        if note:
+            return self.clean_aspect_pair(note)
+        
+        # Преобразуем римский код в арабский
+        arabic_code = self.convert_roman_to_arabic(roman_code)
+        
+        # Определяем пару по коду
+        is_reflexive = verb.endswith("ся") or verb.endswith("сь")
+        
+        # Используем основные правила для римских кодов аспекта
+        if arabic_code == "1" or roman_code == "I":
+            # Код I часто обозначает пару на -ить/-ять
+            if verb.endswith("жить"):
+                return verb.replace("жить", "живать")
+            elif verb.endswith("ружить"):
+                return verb.replace("ружить", "руживать")
+            elif verb.endswith("тужить"):
+                return verb.replace("тужить", "туживать")
+        
+        elif arabic_code == "2" or roman_code == "II":
+            # Код II часто для пар на -ать/-ить
+            if verb.endswith("жить"):
+                return verb.replace("жить", "жать")
+            elif verb.endswith("чтожить"):
+                return verb.replace("чтожить", "чтожать")
+        
+        elif arabic_code == "3" or roman_code == "III":
+            # Код III для более редких случаев
+            if "жи" in verb:
+                return verb.replace("жи", "жива")
+        
+        return ""
+
+    def clean_aspect_pair(self, pair_text):
+        """
+        Очищает текст видовой пары от дополнительных символов.
+        """
+        # Убираем скобки, дефисы в начале и конце, и т.д.
+        cleaned = re.sub(r'^[\-\(\)]+|[\-\(\)]+$', '', pair_text)
+        return cleaned.strip()
+
+    def process_aspectual_pairs(self):
+        """
+        Обрабатывает видовые пары глаголов после основного парсинга.
+        """
+        # Создаем словарь с видовыми парами
+        aspectual_pairs = {}
+        reverse_pairs = {}
+        
+        # Проходим по всем глаголам и собираем информацию о парах
+        for verb_entry in self.verb_data:
+            parts = verb_entry.split('\t')
+            if len(parts) < 8:
+                continue
+                
+            verb = parts[0]
+            aspect = parts[2]
+            special_flags = parts[7]
+            
+            # Ищем пометы о видовых парах
+            pair_matches = re.findall(r'видовая_пара:([^;]+)', special_flags)
+            
+            for pair in pair_matches:
+                # Добавляем пару в прямом и обратном направлении
+                if aspect == "нсв":
+                    aspectual_pairs[verb] = pair
+                    reverse_pairs[pair] = verb
+                elif aspect == "св":
+                    reverse_pairs[verb] = pair
+                    aspectual_pairs[pair] = verb
+        
+        # Объединяем информацию
+        all_pairs = {**aspectual_pairs, **reverse_pairs}
+        
+        # Сохраняем в файл
+        pairs_output = os.path.join(self.output_dir, 'enhanced_aspect_pairs.txt')
+        with open(pairs_output, 'w', encoding='utf-8') as f:
+            f.write("verb\taspectual_pair\taspect\n")
+            for verb, pair in all_pairs.items():
+                aspect = ""
+                for entry in self.verb_data:
+                    if entry.startswith(verb + "\t"):
+                        aspect = entry.split('\t')[2]
+                        break
+                f.write(f"{verb}\t{pair}\t{aspect}\n")
+        
+        logger.info(f"Расширенные видовые пары сохранены в {pairs_output}")
+    
+    def parse_other_line(self, line, file_path, line_num):
+        """
+        Обрабатывает строку, которая не является глаголом.
+        Пытается определить тип строки и вызвать соответствующий парсер.
+        """
+        # Проверяем, является ли это именем собственным
+        if self.is_proper_name_line(line):
+            return self.parse_proper_name_line(line, file_path, line_num)
+        
+        # Проверяем, является ли это существительным или прилагательным
+        if self.is_noun_adj_line(line):
+            return self.parse_noun_adj_line(line, file_path, line_num)
+        
+        # Если не удалось определить тип строки
+        self.add_unknown_construct(line, file_path, line_num, "Неизвестный тип строки")
+        return False
+    
+    def is_proper_name_line(self, line):
+        """
+        Определяет, является ли строка именем собственным.
+        """
+        # Признаки имени собственного: первая буква заглавная и есть типичные индексы
+        words = line.split()
+        if not words:
+            return False
+        
+        first_word = words[0]
+        
+        # Проверяем, начинается ли с заглавной буквы
+        if not first_word[0].isupper():
+            return False
+        
+        # Проверяем наличие индексов, характерных для имен собственных
+        typical_indexes = ["1a", "2a", "3a", "4a", "5a", "6a", "7a", "1b", "2b", "3b"]
+        for index in typical_indexes:
+            if index in line:
+                return True
+        
+        # Проверяем наличие специальных помет для имен собственных
+        if "<жо" in line or "<мо" in line or "§" in line:
+            return True
+        
+        # По умолчанию не считаем именем собственным
+        return False
+    
+    def is_noun_adj_line(self, line):
+        """
+        Определяет, является ли строка существительным или прилагательным.
+        """
+        # Признаки существительного или прилагательного: все буквы строчные
+        # и есть типичные индексы или пометы о роде (м, ж, с, п)
+        words = line.split()
+        if not words:
+            return False
+        
+        first_word = words[0]
+        
+        # Проверяем, все ли буквы строчные
+        if not all(c.islower() or not c.isalpha() for c in first_word):
+            return False
+        
+        # Проверяем наличие помет о роде
+        gender_marks = [" м ", " ж ", " с ", " п "]
+        for mark in gender_marks:
+            if mark in line:
+                return True
+        
+        # Проверяем наличие типичных индексов
+        typical_indexes = ["1a", "2a", "3a", "4a", "5a", "6a", "7a", "1b", "2b", "3b"]
+        for index in typical_indexes:
+            if index in line:
+                return True
+        
+        # По умолчанию не считаем существительным или прилагательным
+        return False
+    
+    def parse_proper_name_line(self, line, file_path, line_num):
+        """
+        Расширенный парсер для имен собственных с поддержкой всех специальных конструкций.
+        """
+        # Пробуем применить специализированные обработчики
+        try:
+            if self.parse_names_with_special_marks(line):
+                return True
+        except Exception as e:
+            # Если произошла ошибка в специальных обработчиках, логируем и продолжаем 
+            # со стандартным парсером
+            logger.warning(f"Ошибка при обработке специальной конструкции: {e}")
+        
+        # Если специальные обработчики не сработали, используем стандартный парсер
+        # Базовый паттерн для разбора основных элементов строки
+        pattern = re.compile(
+            r'^([^\s]+)[\s]+' +                # Лемма (имя с ударениями)
+            r'(?:([мжсоп⁺ф\.]+)[.,]?)?[\s]*' +  # Род/часть речи с метками
+            r'(?:<([жмсоп⁺]+)\s+(\d+[a-fA-F][÷^~\*\+\-\'°§\d]*)[>]?)?(?:,\s*§(\d+)(?:\s*\(\/?\/\))?)?[\s]*' +  # Информация в угловых скобках и параграф
+            r'(?:(\d+[a-fA-F][÷^~\*\+\-\'°§\d]*(?:\s*(?:\+|~|\/\/|—)\s*(?:[<\[]?[жмсопа\-\+⁺]+\s+\d+[a-fA-F][÷^~\*\+\-\'°§\d]*[>\]]?)?)?))?\s*' +  # Индекс с модификаторами
+            r'(.*)'                            # Остаток строки
+        )
+        
+        match = pattern.match(line)
+        if not match:
+            self.add_unknown_construct(line, file_path, line_num, "Не соответствует шаблону имени собственного")
+            return False
+            
+        name, gender_type, alt_gender, alt_index, paragraph, index, rest = match.groups()
+        
+        # Обработка имени с ударением
+        name_with_stress = name
+        name_clean = self.remove_stress_marks(name)
+        
+        # Проверка на географические названия с типом в скобках
+        geo_match = re.search(r'([А-Я][а-яА-ЯёЁ\-\u0301]+(?:ские|ский|ская|ское|ов|ин))\s+\((острова́|зали́в|проли́в|со́пка|река́)\)', line)
+        if geo_match:
+            # Специальная обработка географических названий
+            return self.parse_geographical_name(line, file_path, line_num)
+        
+        # Обработка вариантов параграфа
+        paragraph_num = paragraph if paragraph else None
+        
+        # Обработка индекса
+        primary_index = index
+        secondary_index = None
+        variant_index = None
+        indeclinable = False
+        defective_paradigm = False
+        special_stress = False
+        
+        if index:
+            # Проверка на дефективную парадигму (—)
+            if "—" in index:
+                defective_paradigm = True
+            
+            # Проверка на особую схему ударения (÷)
+            if "÷" in index:
+                special_stress = True
+            
+            # Проверка на несклоняемость (~ 0)
+            if "~ 0" in index:
+                indeclinable = True
+                primary_index = index.split("~")[0].strip()
+            
+            # Обработка вариантов индексов через //
+            if "//" in index:
+                variant_parts = index.split("//")
+                primary_index = variant_parts[0].strip()
+                variant_index = variant_parts[1].strip()
+            
+            # Обработка составных индексов через +
+            if "+" in index and not "//" in index:
+                parts = index.split("+", 1)
+                primary_index = parts[0].strip()
+                secondary_index = parts[1].strip()
+        
+        # Извлечение типов объектов и специальных помет
+        entity_types = []
+        renamed_info = {}
+        stress_variants = []
+        alternative_forms = []
+        local_forms = []
+        
+        # Извлечение типов объектов (_река_, _город_ и т.д.)
+        type_matches = re.findall(r'_([^_]+?)_', rest)
+        for tm in type_matches:
+            if tm in ["река", "город", "остров", "государство", "имя", "озеро", "залив", "пролив", "гора"]:
+                entity_types.append(tm)
+        
+        # Извлечение информации о переименовании
+        rename_match = re.search(r'_(?:ранее|ныне|истор\.|до \d{4} г\.)_\s+([^()]+)', rest)
+        if rename_match:
+            renamed_info["new_name"] = rename_match.group(1).strip()
+            
+            # Определяем тип переименования
+            if "_ранее_" in rest:
+                renamed_info["type"] = "previous"
+            elif "_ныне_" in rest:
+                renamed_info["type"] = "current"
+            elif "_истор._" in rest:
+                renamed_info["type"] = "historical"
+            elif re.search(r'_до \d{4} г\._', rest):
+                renamed_info["type"] = "until_year"
+                year_match = re.search(r'_до (\d{4}) г\._', rest)
+                if year_match:
+                    renamed_info["year"] = year_match.group(1)
+        
+        # Извлечение вариантов ударения
+        stress_match = re.search(r'\(([А-ЯЁ][а-яА-ЯёЁ\-\u0301]*)-\s*♠\)', rest)
+        if stress_match:
+            stress_variants.append({"prefix": stress_match.group(1), "type": "variant"})
+        
+        # Извлечение альтернативных форм [//текст]
+        alt_forms = re.findall(r'\[//([^=\]]+?)(?:\s+[жмсо⁺]+\s+\d+[a-fA-F][÷^~\*\+\-\'°§\d]*)?(?:=)?\]', rest)
+        for alt in alt_forms:
+            alternative_forms.append(alt.strip())
+        
+        # Извлечение местных форм [_местн._ текст =]
+        local_match = re.search(r'\[_местн\._\s+([^=\]]+)=\]', rest)
+        if local_match:
+            local_forms.append(local_match.group(1).strip())
+        
+        # Формируем запись словаря
+        special_flags = []
+        
+        # Добавляем особые флаги
+        if indeclinable:
+            special_flags.append("нескл")
+        if defective_paradigm:
+            special_flags.append("дефект")
+        if special_stress:
+            special_flags.append("особ_удар")
+        if paragraph_num:
+            special_flags.append(f"§{paragraph_num}")
+        if stress_variants:
+            for sv in stress_variants:
+                special_flags.append(f"вар_удар:{sv['prefix']}")
+        
+        # Объединяем информацию
+        types_str = "; ".join(entity_types)
+        alt_forms_str = "; ".join(alternative_forms)
+        local_forms_str = "; ".join(local_forms)
+        special_flags_str = "; ".join(special_flags)
+        
+        # Формируем запись для словаря
+        entry = {
+            "name": name_clean,
+            "name_with_stress": name_with_stress,
+            "gender": gender_type or "",
+            "index": primary_index or "",
+            "alt_gender": alt_gender or "",
+            "alt_index": alt_index or "",
+            "paragraph": paragraph_num or "",
+            "types": types_str,
+            "alt_forms": alt_forms_str,
+            "local_forms": local_forms_str,
+            "special_flags": special_flags_str
+        }
+        
+        # Формируем строку записи
+        record = f"{entry['name']}\t{entry['index']}\t{entry['gender']}\t{rest}\t\t{entry['name_with_stress']}\t{entry['types']}\t{entry['alt_forms']}\t\t\t{entry['special_flags']}\tимя_собственное"
+        
+        # Добавляем запись
+        self.dict_data.append(record)
+        self.proper_names.append(record)
+        return True
+    
+    def parse_geographical_name(self, line, file_path, line_num):
+        """
+        Специализированный метод для обработки географических названий.
+        """
+        # Разные типы географических названий
+        geo_patterns = [
+            # Острова: "Мальдивские (острова́) п"
+            (r'([А-Я][а-яА-ЯёЁ\-\u0301]+(?:ские|ские|ские))\s+\((острова́)\)\s+(п)', "островная_группа"),
+            # Заливы: "Персидский (залив) п"
+            (r'([А-Я][а-яА-ЯёЁ\-\u0301]+(?:ский|ская|ское))\s+\((зали́в)\)\s+(п)', "залив"),
+            # Проливы: "Берингов (пролив) п <мс 1a>"
+            (r'([А-Я][а-яА-ЯёЁ\-\u0301]+(?:ский|ов|ин))\s+\((проли́в)\)\s+(п)(?:\s+<([^>]+)>)?', "пролив"),
+            # Сопки: "Ключевская (сопка) п"
+            (r'([А-Я][а-яА-ЯёЁ\-\u0301]+(?:ская|ский|ское))\s+\((со́пка)\)\s+(п)', "вулкан")
+        ]
+
+        for pattern, geo_type in geo_patterns:
+            match = re.search(pattern, line)
+            if match:
+                name = match.group(1)
+                object_type = match.group(2)
+                pos = match.group(3)
+                
+                # Извлекаем дополнительную информацию в угловых скобках, если есть
+                alt_declension = ""
+                if len(match.groups()) > 3 and match.group(4):
+                    alt_declension = match.group(4)
+                
+                # Формируем запись
+                name_clean = self.remove_stress_marks(name)
+                record = f"{name_clean} {self.remove_stress_marks(object_type)}\tп\t{pos}\t{line}\t\t{name} {object_type}\t{geo_type}\t\t\t\tгеографический_объект:{geo_type}\tимя_собственное"
+                
+                # Добавляем запись
+                self.dict_data.append(record)
+                self.proper_names.append(record)
+                return True
+
+        # Если ни один шаблон не подошел
+        self.add_unknown_construct(line, file_path, line_num, "Неизвестный формат географического названия")
+        return False
+    
+    def parse_names_with_paragraphs(self, line):
+        """
+        Специализированный метод для обработки имен с параграфами (§26, §25, §23 и т.д.)
+        """
+        # Паттерн для имен с параграфами
+        name_pattern = re.compile(
+            r'^([А-ЯЁ][а-яА-ЯёЁ\u0301\-]+)\s+(мо|жо)\s+(\d+[a-zA-Z][\*]?),\s+§(\d+)(?:\s*\(\/\/\))?(.*)$'
+        )
+        
+        match = name_pattern.match(line)
+        if match:
+            name, gender, index, paragraph, rest = match.groups()
+            
+            # Очищаем имя от ударений для ключа
+            name_clean = self.remove_stress_marks(name)
+            
+            # Проверяем наличие специального символа (//)
+            has_double_slash = "(//)" in line
+            
+            # Создаем запись с информацией о параграфе
+            special_flags = [f"§{paragraph}"]
+            if has_double_slash:
+                special_flags.append("вариант://:см_параграф")
+            
+            # Формируем запись для словаря
+            record = f"{name_clean}\t{index}\t{gender}\t§{paragraph}{' (//)' if has_double_slash else ''}{rest}\t\t{name}\tимя\t\t\t\t{'; '.join(special_flags)}\tимя_собственное"
+            
+            # Добавляем запись
+            self.dict_data.append(record)
+            self.proper_names.append(record)
+            return True
+        
+        return False
+
+    def parse_geographical_names_with_history(self, line):
+        """
+        Обрабатывает географические названия с историческими пометками
+        (_ранее_, _ныне_, _совет._, _истор._ и т.д.)
+        """
+        # Паттерн для географических названий с исторической информацией
+        geo_pattern = re.compile(
+            r'^([А-ЯЁ][а-яА-ЯёЁ\u0301\-]+(?:\s+[А-ЯЁ][а-яА-ЯёЁ\u0301\-]+)?)\s+(м|ж)\s+(\d+[a-zA-Z][\*\-—÷]?)\s+\(_(?:ранее|ныне|совет\.|истор\.|ист:|ныне вновь|с \d+ г\.)_\s+([^()]+)\)(.*)$'
+        )
+        
+        match = geo_pattern.match(line)
+        if match:
+            name, gender, index, historical_name, rest = match.groups()
+            
+            # Очищаем имя от ударений для ключа
+            name_clean = self.remove_stress_marks(name)
+            
+            # Определяем тип исторической пометы
+            historical_type = ""
+            if "_ранее_" in line:
+                historical_type = "ранее"
+            elif "_ныне_" in line:
+                historical_type = "ныне"
+            elif "_совет._" in line:
+                historical_type = "совет"
+            elif "_истор._" in line or "_ист:_" in line:
+                historical_type = "истор"
+            elif "_ныне вновь_" in line:
+                historical_type = "ныне_вновь"
+            elif re.search(r'_с \d+ г\._', line):
+                historical_type = "с_года"
+            
+            # Формируем специальные флаги
+            special_flags = [f"переименование:{historical_type}:{historical_name.strip()}"]
+            
+            # Определяем тип географического объекта
+            geo_type = ""
+            if "(_река" in rest:
+                geo_type = "река"
+            elif "(_город" in rest:
+                geo_type = "город"
+            elif "(_озеро" in rest:
+                geo_type = "озеро"
+            elif "(_горы" in rest:
+                geo_type = "горы"
+            
+            # Формируем запись для словаря
+            record = f"{name_clean}\t{index}\t{gender}\t(_{'_'.join(historical_type.split())}_: {historical_name}){rest}\t\t{name}\t{geo_type}\t\t\t\t{'; '.join(special_flags)}\tимя_собственное"
+            
+            # Добавляем запись
+            self.dict_data.append(record)
+            self.proper_names.append(record)
+            return True
+        
+        return False
+
+    def parse_hypocoristic_names(self, line):
+        """
+        Обрабатывает уменьшительно-ласкательные имена (гипокористики)
+        с пометкой (_гипокор._)
+        """
+        # Паттерн для гипокористических имен
+        hypocor_pattern = re.compile(
+            r'^([А-ЯЁ][а-яА-ЯёЁ\u0301\-]+)\s+(мо|жо)\s+(\d+[a-zA-Z][\*b]?)\s+\(_гипокор\._\)(?:,\s+§(\d+))?(.*)$'
+        )
+        
+        match = hypocor_pattern.match(line)
+        if match:
+            groups = match.groups()
+            name = groups[0]
+            gender = groups[1]
+            index = groups[2]
+            paragraph = groups[3] if len(groups) > 3 else None
+            rest = groups[4] if len(groups) > 4 else ""
+            
+            # Очищаем имя от ударений для ключа
+            name_clean = self.remove_stress_marks(name)
+            
+            # Формируем специальные флаги
+            special_flags = ["гипокористическое"]
+            if paragraph:
+                special_flags.append(f"§{paragraph}")
+            
+            # Формируем запись для словаря
+            record = f"{name_clean}\t{index}\t{gender}\t(_гипокор._){', §' + paragraph if paragraph else ''}{rest}\t\t{name}\tгипокористическое_имя\t\t\t\t{'; '.join(special_flags)}\tимя_собственное"
+            
+            # Добавляем запись
+            self.dict_data.append(record)
+            self.proper_names.append(record)
+            return True
+        
+        return False
+
+    def parse_surnames_with_special_marks(self, line):
+        """
+        Обрабатывает фамилии с пометкой ~ 0 и §
+        """
+        # Паттерн для фамилий с особыми пометками
+        surname_pattern = re.compile(
+            r'^([А-ЯЁ][а-яА-ЯёЁ\u0301\-]+)\s+(ф\.)\s+(\d+[a-zA-Z][\*]?)\s+~\s+0(?:,\s+§(\d+))?(.*)$'
+        )
+        
+        match = surname_pattern.match(line)
+        if match:
+            groups = match.groups()
+            surname = groups[0]
+            gender = groups[1]
+            index = groups[2]
+            paragraph = groups[3] if len(groups) > 3 else None
+            rest = groups[4] if len(groups) > 4 else ""
+            
+            # Очищаем фамилию от ударений для ключа
+            surname_clean = self.remove_stress_marks(surname)
+            
+            # Формируем специальные флаги
+            special_flags = ["несклоняемое"]
+            if paragraph:
+                special_flags.append(f"§{paragraph}")
+            
+            # Проверяем на вариативное ударение
+            stress_variant = None
+            stress_match = re.search(r'\(([А-ЯЁ][а-яА-ЯёЁ\-\u0301]*)-\s*♠\)', rest)
+            if stress_match:
+                stress_variant = stress_match.group(1)
+                special_flags.append(f"вар_удар:{stress_variant}")
+            
+            # Формируем запись для словаря
+            record = f"{surname_clean}\t{index} ~ 0\t{gender}\t{paragraph + ', ' if paragraph else ''}{rest}\t\t{surname}\tфамилия\t\t\t\t{'; '.join(special_flags)}\tимя_собственное"
+            
+            # Добавляем запись
+            self.dict_data.append(record)
+            self.proper_names.append(record)
+            return True
+        
+        return False
+
+    def parse_compound_names(self, line):
+        """
+        Обрабатывает составные имена и названия
+        """
+        # Паттерн для составных имен
+        compound_pattern = re.compile(
+            r'^([А-ЯЁ][а-яА-ЯёЁ\u0301\-]+(?:\s+[дф]\')?[А-ЯЁ][а-яА-ЯёЁ\u0301\-]+(?:\s+[А-ЯЁ][а-яА-ЯёЁ\u0301\-]+)?)\s+(мо|жо|п\s\+\s[мж]),\s+(\d+[a-zA-Z][\*]?)\s+\+\s+(?:<([^>]+)>)?(\d+[a-zA-Z][\*]?)(.*)$'
+        )
+        
+        match = compound_pattern.match(line)
+        if match:
+            compound_name, gender, index1, alt_gender, index2, rest = match.groups()
+            
+            # Очищаем составное имя от ударений для ключа
+            compound_name_clean = self.remove_stress_marks(compound_name)
+            
+            # Разделяем составное имя на части
+            name_parts = re.findall(r'[А-ЯЁ][а-яА-ЯёЁ\u0301\-\']+', compound_name)
+            
+            # Формируем специальные флаги
+            special_flags = ["составное_имя"]
+            if alt_gender:
+                special_flags.append(f"alt_gender:{alt_gender}")
+            
+            # Формируем запись для словаря
+            index_part = f"{index1} + {index2}"
+            if alt_gender:
+                index_part = f"{index1} + <{alt_gender}> {index2}"
+            
+            record = f"{compound_name_clean}\t{index_part}\t{gender}\t{rest}\t\t{compound_name}\tсоставное_имя\t\t\t\t{'; '.join(special_flags)}\tимя_собственное"
+            
+            # Добавляем запись
+            self.dict_data.append(record)
+            self.proper_names.append(record)
+            return True
+        
+        return False
+
+    def parse_names_with_special_marks(self, line):
+        """
+        Комплексная функция для обработки имен с различными специальными пометами
+        """
+        # Проверяем все специализированные методы
+        if self.parse_names_with_paragraphs(line):
+            return True
+        
+        if self.parse_geographical_names_with_history(line):
+            return True
+        
+        if self.parse_hypocoristic_names(line):
+            return True
+        
+        if self.parse_surnames_with_special_marks(line):
+            return True
+        
+        if self.parse_compound_names(line):
+            return True
+        
+        # Проверяем особые случаи сравнения с другими формами
+        comparison_pattern = re.compile(
+            r'^([А-ЯЁ][а-яА-ЯёЁ\u0301\-]+)\s+(мо|м)\s+(\d+[a-zA-Z])\s+\(_(?:иначе|то же, что)_\s+([^()]+)\)(.*)$'
+        )
+        
+        match = comparison_pattern.match(line)
+        if match:
+            name, gender, index, alternate, rest = match.groups()
+            name_clean = self.remove_stress_marks(name)
+            
+            # Формируем запись с указанием альтернативной формы
+            special_flags = [f"альтернатива:{self.remove_stress_marks(alternate)}"]
+            
+            record = f"{name_clean}\t{index}\t{gender}\t(_иначе/то же, что_ {alternate}){rest}\t\t{name}\t\t{alternate}\t\t\t{'; '.join(special_flags)}\tимя_собственное"
+            
+            # Добавляем запись
+            self.dict_data.append(record)
+            self.proper_names.append(record)
+            return True
+        
+        # Проверяем местные варианты произношения
+        local_pattern = re.compile(
+            r'^([А-ЯЁ][а-яА-ЯёЁ\u0301\-]+(?:\s+[А-ЯЁ][а-яА-ЯёЁ\u0301\-]+)?)\s+(м|ж)\s+(\d+[a-zA-Z][\*\-—÷]?)\s+\[_местн\._\s+([^=\]]+)=\](.*)$'
+        )
+        
+        match = local_pattern.match(line)
+        if match:
+            name, gender, index, local_form, rest = match.groups()
+            name_clean = self.remove_stress_marks(name)
+            
+            # Формируем запись с указанием местной формы
+            special_flags = [f"местная_форма:{self.remove_stress_marks(local_form)}"]
+            
+            record = f"{name_clean}\t{index}\t{gender}\t[_местн._ {local_form}=]{rest}\t\t{name}\t\t\t\t\t{'; '.join(special_flags)}\tимя_собственное"
+            
+            # Добавляем запись
+            self.dict_data.append(record)
+            self.proper_names.append(record)
+            return True
+        
+        # Если не сработал ни один из специальных обработчиков
+        return False
+
+    def handle_special_proper_name_cases(self):
+        """
+        Обработка особых случаев имен собственных после завершения основного парсинга.
+        """
+        # Здесь можно добавить дополнительную логику для постобработки имен собственных
+        # Например, связывание исторических и современных названий
+        
+        # Связываем переименованные объекты
+        renamed_map = {}
+        
+        for entry in self.proper_names:
+            parts = entry.split('\t')
+            if len(parts) >= 10 and "_ныне_" in parts[3]:
+                name = parts[0]
+                match = re.search(r'_ныне_\s+([^()]+)', parts[3])
+                if match:
+                    current_name = match.group(1).strip()
+                    renamed_map[name] = {"current": current_name, "entry": entry}
+            
+            if len(parts) >= 10 and "_ранее_" in parts[3]:
+                name = parts[0]
+                match = re.search(r'_ранее_\s+([^()]+)', parts[3])
+                if match:
+                    previous_name = match.group(1).strip()
+                    renamed_map[name] = {"previous": previous_name, "entry": entry}
+        
+        # Можно сохранить эту информацию для дальнейшего использования
+        if renamed_map:
+            renamed_output = os.path.join(self.output_dir, 'renamed_places.txt')
+            with open(renamed_output, 'w', encoding='utf-8') as f:
+                f.write("current_name\tprevious_name\n")
+                for name, data in renamed_map.items():
+                    if "current" in data:
+                        f.write(f"{data['current']}\t{name}\n")
+                    if "previous" in data:
+                        f.write(f"{name}\t{data['previous']}\n")
+
+    def parse_noun_adj_line(self, line, file_path, line_num):
+        """
+        Парсит строку с существительным или прилагательным.
+        """
+        # Базовый паттерн для разбора существительных и прилагательных
+        pattern = re.compile(
+            r'^([^\s]+)\s+' +  # Лемма (слово с ударениями)
+            r'(?:([мжсноп]+)\.?\s+)?' +  # Род/часть речи с возможной точкой
+            r'(?:(\d+[a-zA-Z][÷^~\*\+\-\'°§\d\u2070]*))?' +  # Индекс спряжения с возможными модификаторами
+            r'(?:,\s+([^\s]+))?' +  # Возможный дополнительный параметр после запятой
+            r'\s*(.*)'  # Остаток строки с комментариями
+        )
+        
+        match = pattern.match(line)
+        if not match:
+            self.add_unknown_construct(line, file_path, line_num, "Не соответствует шаблону существительного/прилагательного")
+            return False
+        
+        word, word_type, index, additional_param, rest = match.groups()
+        
+        # Обрабатываем лемму
+        word_with_stress = word
+        word_clean = self.remove_stress_marks(word)
+        
+        # Обрабатываем тип слова
+        pos = ""
+        if word_type:
+            if "с" in word_type:
+                pos = "сущ"
+            elif "п" in word_type:
+                pos = "прил"
+            elif "н" in word_type:
+                pos = "нареч"
+            else:
+                pos = word_type
+        
+        # Обрабатываем индекс
+        if index:
+            # Проверяем наличие специальных символов
+            special_index_markers = []
+            if "÷" in index:
+                special_index_markers.append("особое_ударение")
+            if "^" in index:
+                special_index_markers.append("особая_форма")
+            if "~" in index:
+                special_index_markers.append("несклоняемое")
+            if "*" in index:
+                special_index_markers.append("дефективная_парадигма")
+        else:
+            special_index_markers = []
+        
+        # Обрабатываем семантические пояснения и примеры
+        semantic_notes = []
+        sem_matches = re.findall(r'\(_([^_]+)_(?:\s*:\s*([^)]+))?\)', rest)
+        for sem_match in sem_matches:
+            note = sem_match[0]
+            examples = sem_match[1] if len(sem_match) > 1 and sem_match[1] else ""
+            
+            if examples:
+                semantic_note = f"{note}: {examples}"
+            else:
+                semantic_note = note
+            
+            semantic_notes.append(semantic_note)
+        
+        # Формируем запись для словаря
+        special_flags_str = "; ".join(special_index_markers)
+        semantic_notes_str = "; ".join(semantic_notes)
+        
+        record = f"{word_clean}\t{index or ''}\t{pos}\t{semantic_notes_str}\t\t{word_with_stress}\t\t{special_flags_str}\t"
+        
+        # Добавляем запись
+        self.dict_data.append(record)
+        return True
+
+    def is_verb_line(self, line):
+        """Проверяет, является ли строка описанием глагола с учетом новых помет."""
+        # Расширенная проверка для глаголов
+        if re.search(r'\b(нсв|св|св-нсв|нп)\b', line):
+            return True
+        
+        # Проверяем наличие специальных символов, характерных для глаголов
+        if "◑" in line or "⌧" in line or "✕" in line or "многокр" in line:
+            return True
+        
+        # Проверяем возвратные глаголы
+        words = line.split()
+        if words and (words[0].endswith("ся") or words[0].endswith("сь")):
+            return True
+        
+        return False
+
+    def remove_stress_marks(self, text):
+        """Удаляет ударения из текста."""
+        # Удаляем комбинированное ударение (гравис, акут)
+        text = text.replace('\u0300', '').replace('\u0301', '')
+        return text
+
+    def add_unknown_construct(self, line, file_path, line_num, reason=""):
+        """Добавляет неизвестную конструкцию в список ошибок."""
+        file_name = os.path.basename(file_path)
+        entry = f"{file_name}\t{line_num}\t{line}\t{reason}"
+        self.unknown_constructs.append(entry)
+        logger.warning(f"Неизвестная конструкция: {entry}")
+
+    def save_all_data(self):
+        """Сохраняет все обработанные данные в выходные файлы."""
+        # Сохраняем основной словарь
+        dict_output = os.path.join(self.output_dir, 'dictionary_full.txt')
+        with open(dict_output, 'w', encoding='utf-8') as f:
+            f.write("lemma\tindex\tpos\tsemantic_info\tform\tlemma_with_stress\tnote\tspecial_flags\tform_type\n")
+            for entry in self.dict_data:
+                f.write(entry + '\n')
+        logger.info(f"Словарь сохранен в {dict_output}")
+        
+        # Сохраняем имена собственные
+        proper_output = os.path.join(self.output_dir, 'proper_names.txt')
+        with open(proper_output, 'w', encoding='utf-8') as f:
+            f.write("name\tindex\tgender\tinfo\tform\tname_with_stress\ttypes\talt_forms\tlocal_forms\tform_type\tspecial_flags\tpos\n")
+            for entry in self.proper_names:
+                f.write(entry + '\n')
+        logger.info(f"Имена собственные сохранены в {proper_output}")
+        
+        # Сохраняем глаголы
+        verb_output = os.path.join(self.output_dir, 'verbs.txt')
+        with open(verb_output, 'w', encoding='utf-8') as f:
+            f.write("verb\tindex\taspect\tsemantic_info\tform\tverb_with_stress\tnote\tspecial_flags\tform_type\n")
+            for entry in self.verb_data:
+                f.write(entry + '\n')
+        logger.info(f"Глаголы сохранены в {verb_output}")
+        
+        # Сохраняем неизвестные конструкции
+        unknown_output = os.path.join(self.output_dir, 'unknown_constructs.txt')
+        with open(unknown_output, 'w', encoding='utf-8') as f:
+            f.write("file\tline\tconstruct\treason\n")
+            for entry in self.unknown_constructs:
+                f.write(entry + '\n')
+        logger.info(f"Неизвестные конструкции сохранены в {unknown_output}")
+
+
+def main():
+    """Основная функция для запуска парсера."""
+    parser = argparse.ArgumentParser(description='Парсер словаря Зализняка')
+    parser.add_argument('repo_path', help='Путь к репозиторию с файлами для обработки')
+    parser.add_argument('output_dir', help='Директория для выходных файлов')
+    
+    args = parser.parse_args()
+    
+    # Создаем и запускаем парсер
+    zalizniak_parser = ComprehensiveZalizniakParser(args.repo_path, args.output_dir)
+    if zalizniak_parser.parse_repo_files():
+        logger.info("Обработка успешно завершена")
+    else:
+        logger.error("При обработке произошли ошибки")
+
+
+if __name__ == '__main__':
+    main()
