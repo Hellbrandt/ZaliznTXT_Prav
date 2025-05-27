@@ -1,0 +1,2144 @@
+' =====================================================
+' МОДУЛЬ СКЛОНЕНИЯ ФИО С САМООБУЧЕНИЕМ
+' Часть 1: Основные структуры и инициализация
+' =====================================================
+Option Explicit
+
+' ===== СТРУКТУРЫ ДАННЫХ =====
+
+' Структура для хранения правил склонения
+Public Type DeclensionRule
+    Ending As String
+    gender As String ' М, Ж, С
+    Cases(1 To 6) As String ' Падежи: И, Р, Д, В, Т, П
+    UsageCount As Long ' Счетчик использования
+    SuccessRate As Double ' Процент успешных применений
+End Type
+
+' Структура для морфологического паттерна
+Type MorphPattern
+    OriginalEnding As String
+    DeclinedEnding As String
+    CaseNumber As Integer
+    Frequency As Long
+End Type
+
+' ===== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ =====
+Dim Rules() As DeclensionRule
+Dim CustomDeclensions As Object
+Dim UsageStats As Object
+Dim MorphPatterns As Object
+Dim GenderClassifier As Object
+Dim IsInitialized As Boolean
+
+' ===== ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ =====
+
+Sub InitializeDeclensionSystem()
+    On Error GoTo ErrorHandler
+    
+    ' Создание словарей
+    Set CustomDeclensions = CreateObject("Scripting.Dictionary")
+    Set UsageStats = CreateObject("Scripting.Dictionary")
+    Set MorphPatterns = CreateObject("Scripting.Dictionary")
+    Set GenderClassifier = CreateObject("Scripting.Dictionary")
+    
+    ' Загрузка данных
+    LoadRulesFromSheet
+    LoadCustomDeclensions
+    LoadUsageStatistics
+    LoadGenderClassifier
+    InitializeMorphPatterns
+    
+    IsInitialized = True
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "Ошибка инициализации: " & Err.Description, vbCritical
+End Sub
+
+' Процедура для ручной инициализации
+Sub ManualInit()
+    On Error GoTo ErrorHandler
+    
+    ' Инициализация всех словарей
+    Set CustomDeclensions = CreateObject("Scripting.Dictionary")
+    Set UsageStats = CreateObject("Scripting.Dictionary")
+    Set MorphPatterns = CreateObject("Scripting.Dictionary")
+    Set GenderClassifier = CreateObject("Scripting.Dictionary")
+    
+    ' Загрузка данных
+    LoadRulesFromSheet
+    LoadCustomDeclensions
+    LoadGenderClassifier
+    
+    IsInitialized = True
+    MsgBox "Система инициализирована успешно!", vbInformation
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "Ошибка инициализации: " & Err.Description, vbCritical
+End Sub
+
+' Автоматический запуск при открытии книги
+Sub Auto_Open()
+    InitializeDeclensionSystem
+End Sub
+
+' ===== ЗАГРУЗКА ПРАВИЛ =====
+
+Sub LoadRulesFromSheet()
+    Dim ws As Worksheet
+    Dim lastRow As Long
+    Dim i As Long
+    
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets("DeclensionRules")
+    If ws Is Nothing Then
+        Set ws = ThisWorkbook.Worksheets.Add
+        ws.name = "DeclensionRules"
+        CreateAdvancedRulesTemplate ws
+    End If
+    On Error GoTo 0
+    
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).row
+    If lastRow > 1 Then
+        ReDim Rules(1 To lastRow - 1)
+        For i = 2 To lastRow
+            With Rules(i - 1)
+                .Ending = ws.Cells(i, 1).Value
+                .gender = ws.Cells(i, 2).Value
+                .Cases(1) = ws.Cells(i, 3).Value
+                .Cases(2) = ws.Cells(i, 4).Value
+                .Cases(3) = ws.Cells(i, 5).Value
+                .Cases(4) = ws.Cells(i, 6).Value
+                .Cases(5) = ws.Cells(i, 7).Value
+                .Cases(6) = ws.Cells(i, 8).Value
+                .UsageCount = Val(ws.Cells(i, 9).Value)
+                .SuccessRate = Val(ws.Cells(i, 10).Value)
+            End With
+        Next i
+    Else
+        ' Если правил нет, создаем минимальный набор
+        ReDim Rules(1 To 1)
+        Rules(1).Ending = ""
+        Rules(1).gender = "М"
+    End If
+End Sub
+
+' Создание расширенного шаблона правил
+Sub CreateAdvancedRulesTemplate(ws As Worksheet)
+    ' Заголовки с дополнительными полями
+    ws.Range("A1:J1").Value = Array("Окончание", "Род", "Именительный", _
+        "Родительный", "Дательный", "Винительный", "Творительный", "Предложный", _
+        "Использований", "Успешность %")
+    
+    Dim row As Long
+    row = 2
+    
+    ' === ФАМИЛИИ ===
+    ' Мужские фамилии
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ов", "М", "", "а", "у", "а", "ым", "е", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ев", "М", "", "а", "у", "а", "ым", "е", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ёв", "М", "", "а", "у", "а", "ым", "е", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ин", "М", "", "а", "у", "а", "ым", "е", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ын", "М", "", "а", "у", "а", "ым", "е", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ский", "М", "", "ского", "скому", "ского", "ским", "ском", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("цкий", "М", "", "цкого", "цкому", "цкого", "цким", "цком", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ской", "М", "", "ского", "скому", "ского", "ским", "ском", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("цкой", "М", "", "цкого", "цкому", "цкого", "цким", "цком", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ой", "М", "", "ого", "ому", "ого", "ым", "ом", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ий", "М", "", "ого", "ому", "ого", "им", "ом", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ый", "М", "", "ого", "ому", "ого", "ым", "ом", 0, 100)
+    row = row + 1
+    
+    ' Женские фамилии
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ова", "Ж", "", "овой", "овой", "ову", "овой", "овой", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ева", "Ж", "", "евой", "евой", "еву", "евой", "евой", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ёва", "Ж", "", "ёвой", "ёвой", "ёву", "ёвой", "ёвой", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ина", "Ж", "", "иной", "иной", "ину", "иной", "иной", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ына", "Ж", "", "ыной", "ыной", "ыну", "ыной", "ыной", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ская", "Ж", "", "ской", "ской", "скую", "ской", "ской", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("цкая", "Ж", "", "цкой", "цкой", "цкую", "цкой", "цкой", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ая", "Ж", "", "ой", "ой", "ую", "ой", "ой", 0, 100)
+    row = row + 1
+    
+    ' === МУЖСКИЕ ИМЕНА ===
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ий", "М", "", "ия", "ию", "ия", "ием", "ии", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ей", "М", "", "ея", "ею", "ея", "еем", "ее", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ай", "М", "", "ая", "аю", "ая", "аем", "ае", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ой", "М", "", "оя", "ою", "оя", "оем", "ое", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ь", "М", "", "я", "ю", "я", "ем", "е", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("й", "М", "", "я", "ю", "я", "ем", "е", 0, 100)
+    row = row + 1
+    
+    ' Особые случаи мужских имен
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("др", "М", "", "дра", "дру", "дра", "дром", "дре", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ел", "М", "", "ла", "лу", "ла", "лом", "ле", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ёл", "М", "", "ла", "лу", "ла", "лом", "ле", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("тр", "М", "", "тра", "тру", "тра", "тром", "тре", 0, 100)
+    row = row + 1
+    
+    ' === ЖЕНСКИЕ ИМЕНА ===
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("а", "Ж", "", "ы", "е", "у", "ой", "е", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("я", "Ж", "", "и", "е", "ю", "ей", "е", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ия", "Ж", "", "ии", "ии", "ию", "ией", "ии", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ья", "Ж", "", "ьи", "ье", "ью", "ьей", "ье", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("га", "Ж", "", "ги", "ге", "гу", "гой", "ге", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ка", "Ж", "", "ки", "ке", "ку", "кой", "ке", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("жа", "Ж", "", "жи", "же", "жу", "жой", "же", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ша", "Ж", "", "ши", "ше", "шу", "шой", "ше", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ча", "Ж", "", "чи", "че", "чу", "чой", "че", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ща", "Ж", "", "щи", "ще", "щу", "щой", "ще", 0, 100)
+    row = row + 1
+    
+    ' === ОТЧЕСТВА ===
+    ' Мужские отчества
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ович", "М", "", "овича", "овичу", "овича", "овичем", "овиче", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("евич", "М", "", "евича", "евичу", "евича", "евичем", "евиче", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ич", "М", "", "ича", "ичу", "ича", "ичем", "иче", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ьич", "М", "", "ьича", "ьичу", "ьича", "ьичем", "ьиче", 0, 100)
+    row = row + 1
+    
+    ' Женские отчества
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("овна", "Ж", "", "овны", "овне", "овну", "овной", "овне", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("евна", "Ж", "", "евны", "евне", "евну", "евной", "евне", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("ична", "Ж", "", "ичны", "ичне", "ичну", "ичной", "ичне", 0, 100)
+    row = row + 1
+    ws.Cells(row, 1).Resize(1, 10).Value = Array("инична", "Ж", "", "иничны", "иничне", "иничну", "иничной", "иничне", 0, 100)
+    
+    ' Форматирование
+    ws.Columns("A:J").AutoFit
+    ws.Range("A1:J1").Font.Bold = True
+    ws.Range("A1:J1").Interior.Color = RGB(200, 200, 200)
+End Sub
+
+' =====================================================
+' МОДУЛЬ СКЛОНЕНИЯ ФИО С САМООБУЧЕНИЕМ
+' Часть 2: Основные функции склонения
+' =====================================================
+
+' ===== ОСНОВНАЯ ФУНКЦИЯ СКЛОНЕНИЯ =====
+
+Function DeclineName(FullName As String, CaseNumber As Integer, Optional gender As String = "") As String
+    On Error GoTo ErrorHandler
+    
+    ' Проверка инициализации
+    If Not IsInitialized Or CustomDeclensions Is Nothing Then
+        InitializeDeclensionSystem
+    End If
+    
+    Dim parts() As String
+    Dim result As String
+    Dim i As Integer
+    Dim detectedGender As String
+    
+    ' Нормализация входных данных
+    FullName = Trim(FullName)
+    
+    ' Проверка входных данных
+    If FullName = "" Then
+        DeclineName = ""
+        Exit Function
+    End If
+    
+    If CaseNumber < 1 Or CaseNumber > 6 Then
+        DeclineName = FullName
+        Exit Function
+    End If
+    
+    ' Проверка кэша пользовательских склонений
+    Dim key As String
+    key = FullName & "|" & CaseNumber
+    If CustomDeclensions.Exists(key) Then
+        DeclineName = CustomDeclensions(key)
+        UpdateUsageStats key, True
+        Exit Function
+    End If
+    
+    ' Разбиваем ФИО на части
+    parts = Split(FullName, " ")
+    
+    If UBound(parts) < 0 Then
+        DeclineName = FullName
+        Exit Function
+    End If
+    
+    ' Определение пола по контексту
+    If gender = "" Then
+        detectedGender = DetectGender(parts)
+    Else
+        detectedGender = gender
+    End If
+    
+    ' Склонение каждой части
+    For i = 0 To UBound(parts)
+        If i > 0 Then result = result & " "
+        
+        Select Case i
+            Case 0 ' Фамилия
+                result = result & DeclinePart(parts(i), CaseNumber, detectedGender, "Surname")
+            Case 1 ' Имя
+                result = result & DeclinePart(parts(i), CaseNumber, detectedGender, "Name")
+            Case 2 ' Отчество
+                result = result & DeclinePart(parts(i), CaseNumber, detectedGender, "Patronymic")
+            Case Else ' Дополнительные части
+                result = result & parts(i) ' Оставляем без изменений
+        End Select
+    Next i
+    
+    DeclineName = result
+    UpdateUsageStats key, False
+    Exit Function
+    
+ErrorHandler:
+    DeclineName = FullName ' При ошибке возвращаем исходное
+End Function
+
+' Безопасная функция для использования в формулах Excel
+Function DeclineNameSafe(FullName As String, CaseNumber As Integer, Optional gender As String = "") As String
+    On Error GoTo ErrorHandler
+    
+    ' Автоматическая инициализация при первом вызове
+    If CustomDeclensions Is Nothing Then
+        Set CustomDeclensions = CreateObject("Scripting.Dictionary")
+        Set UsageStats = CreateObject("Scripting.Dictionary")
+        Set MorphPatterns = CreateObject("Scripting.Dictionary")
+        Set GenderClassifier = CreateObject("Scripting.Dictionary")
+        LoadRulesFromSheet
+        LoadCustomDeclensions
+        LoadGenderClassifier
+        IsInitialized = True
+    End If
+    
+    ' Проверка входных данных
+    If Len(Trim(FullName)) = 0 Then
+        DeclineNameSafe = ""
+        Exit Function
+    End If
+    
+    If CaseNumber < 1 Or CaseNumber > 6 Then
+        DeclineNameSafe = FullName
+        Exit Function
+    End If
+    
+    ' Вызов основной функции
+    DeclineNameSafe = DeclineName(FullName, CaseNumber, gender)
+    Exit Function
+    
+ErrorHandler:
+    ' В случае ошибки возвращаем исходное ФИО
+    DeclineNameSafe = FullName
+End Function
+
+' Склонение отдельной части ФИО
+Public Function DeclinePart(Part As String, CaseNumber As Integer, gender As String, PartType As String) As String
+    Dim i As Integer
+    Dim bestMatch As Integer
+    Dim maxLength As Integer
+    Dim confidence As Double
+    
+    ' Проверка на пустоту
+    If Trim(Part) = "" Then
+        DeclinePart = Part
+        Exit Function
+    End If
+    
+    ' Проверка исключений
+    If IsException(Part) Then
+        DeclinePart = GetException(Part, CaseNumber)
+        Exit Function
+    End If
+    
+    ' Проверка, что правила загружены
+    If Not IsArray(Rules) Then
+        LoadRulesFromSheet
+    End If
+    
+    ' Поиск лучшего правила с учетом статистики
+    bestMatch = -1
+    maxLength = 0
+    confidence = 0
+    
+    For i = LBound(Rules) To UBound(Rules)
+        If Len(Rules(i).Ending) > maxLength Or _
+           (Len(Rules(i).Ending) = maxLength And Rules(i).SuccessRate > confidence) Then
+            If Right(Part, Len(Rules(i).Ending)) = Rules(i).Ending Then
+                If gender = "" Or Rules(i).gender = gender Or Rules(i).gender = "?" Then
+                    bestMatch = i
+                    maxLength = Len(Rules(i).Ending)
+                    confidence = Rules(i).SuccessRate
+                End If
+            End If
+        End If
+    Next i
+    
+    ' Применение правила
+    If bestMatch > -1 Then
+        If CaseNumber = 1 Then
+            DeclinePart = Part
+        Else
+            DeclinePart = Left(Part, Len(Part) - Len(Rules(bestMatch).Ending)) & _
+                         Rules(bestMatch).Cases(CaseNumber)
+        End If
+        
+        ' Обновление статистики использования
+        Rules(bestMatch).UsageCount = Rules(bestMatch).UsageCount + 1
+    Else
+        ' Попытка применить морфологические паттерны
+        DeclinePart = ApplyMorphPattern(Part, CaseNumber, gender)
+        If DeclinePart = "" Then DeclinePart = Part
+    End If
+End Function
+
+' ===== ОПРЕДЕЛЕНИЕ ПОЛА =====
+
+Function DetectGender(parts() As String) As String
+    Dim patronymic As String
+    Dim firstName As String
+    Dim lastName As String
+    
+    ' Анализ отчества (самый надежный способ)
+    If UBound(parts) >= 2 Then
+        patronymic = parts(2)
+        If Right(patronymic, 4) = "ович" Or Right(patronymic, 4) = "евич" Or _
+           Right(patronymic, 2) = "ич" Or Right(patronymic, 3) = "ьич" Then
+            DetectGender = "М"
+            Exit Function
+        ElseIf Right(patronymic, 4) = "овна" Or Right(patronymic, 4) = "евна" Or _
+               Right(patronymic, 4) = "ична" Or Right(patronymic, 7) = "инична" Then
+            DetectGender = "Ж"
+            Exit Function
+        End If
+    End If
+    
+    ' Анализ имени
+    If UBound(parts) >= 1 Then
+        firstName = parts(1)
+        If GenderClassifier.Exists(firstName) Then
+            DetectGender = GenderClassifier(firstName)
+            Exit Function
+        End If
+        
+        ' Эвристика по окончаниям имени
+        If Right(firstName, 1) = "а" Or Right(firstName, 1) = "я" Then
+            ' Исключения для мужских имен на -а/-я
+            If firstName = "Илья" Or firstName = "Никита" Or firstName = "Савва" Or _
+               firstName = "Фома" Or firstName = "Кузьма" Or firstName = "Лука" Then
+                DetectGender = "М"
+            Else
+                DetectGender = "Ж"
+            End If
+        Else
+            DetectGender = "М"
+        End If
+        Exit Function
+    End If
+    
+    ' Анализ фамилии
+    If UBound(parts) >= 0 Then
+        lastName = parts(0)
+        If Right(lastName, 3) = "ова" Or Right(lastName, 3) = "ева" Or _
+           Right(lastName, 3) = "ина" Or Right(lastName, 3) = "ына" Or _
+           Right(lastName, 4) = "ская" Or Right(lastName, 4) = "цкая" Or _
+           Right(lastName, 2) = "ая" Then
+            DetectGender = "Ж"
+        Else
+            DetectGender = "М"
+        End If
+    Else
+        DetectGender = "М" ' По умолчанию
+    End If
+End Function
+
+' ===== РАБОТА С ИСКЛЮЧЕНИЯМИ =====
+
+Function IsException(Word As String) As Boolean
+    Dim exceptions As Variant
+    exceptions = Array("Дюма", "Гюго", "Хайям", "Хемингуэй", "Шоу", "Руссо", _
+                      "Дали", "Верди", "Гарибальди", "Кеннеди", "Феллини")
+    
+    Dim i As Integer
+    For i = 0 To UBound(exceptions)
+        If Word = exceptions(i) Then
+            IsException = True
+            Exit Function
+        End If
+    Next i
+    
+    ' Проверка окончаний исключений
+    If Right(Word, 2) = "ых" Or Right(Word, 2) = "их" Then
+        IsException = True ' Фамилии типа Черных, Долгих
+    End If
+    
+    IsException = False
+End Function
+
+Function GetException(Word As String, CaseNumber As Integer) As String
+    ' Несклоняемые фамилии остаются без изменений
+    GetException = Word
+End Function
+
+' ===== ПРИМЕНЕНИЕ МОРФОЛОГИЧЕСКИХ ПАТТЕРНОВ =====
+
+Function ApplyMorphPattern(Word As String, CaseNumber As Integer, gender As String) As String
+    Dim key As Variant
+    Dim bestPattern As String
+    Dim maxFreq As Long
+    Dim parts() As String
+    
+    bestPattern = ""
+    maxFreq = 0
+    
+    ' Проверка инициализации
+    If MorphPatterns Is Nothing Then
+        ApplyMorphPattern = ""
+        Exit Function
+    End If
+    
+    ' Поиск подходящего паттерна
+    For Each key In MorphPatterns.Keys
+        parts = Split(key, "|")
+        
+        If UBound(parts) = 2 Then
+            If Right(Word, Len(parts(0))) = parts(0) And Val(parts(1)) = CaseNumber Then
+                If MorphPatterns(key) > maxFreq Then
+                    maxFreq = MorphPatterns(key)
+                    bestPattern = parts(2)
+                End If
+            End If
+        End If
+    Next key
+    
+    If bestPattern <> "" And maxFreq > 0 Then
+        ApplyMorphPattern = Left(Word, Len(Word) - Len(parts(0))) & bestPattern
+    Else
+        ApplyMorphPattern = ""
+    End If
+End Function
+
+' ===== ЗАГРУЗКА КЛАССИФИКАТОРА ПОЛА =====
+
+Sub LoadGenderClassifier()
+    ' Проверка инициализации
+    If GenderClassifier Is Nothing Then
+        Set GenderClassifier = CreateObject("Scripting.Dictionary")
+    End If
+    
+    ' Мужские имена
+    GenderClassifier("Александр") = "М"
+    GenderClassifier("Алексей") = "М"
+    GenderClassifier("Анатолий") = "М"
+    GenderClassifier("Андрей") = "М"
+    GenderClassifier("Антон") = "М"
+    GenderClassifier("Аркадий") = "М"
+    GenderClassifier("Арсений") = "М"
+    GenderClassifier("Артем") = "М"
+    GenderClassifier("Артемий") = "М"
+    GenderClassifier("Артур") = "М"
+    GenderClassifier("Богдан") = "М"
+    GenderClassifier("Борис") = "М"
+    GenderClassifier("Вадим") = "М"
+    GenderClassifier("Валентин") = "М"
+    GenderClassifier("Валерий") = "М"
+    GenderClassifier("Василий") = "М"
+    GenderClassifier("Вениамин") = "М"
+    GenderClassifier("Виктор") = "М"
+    GenderClassifier("Виталий") = "М"
+    GenderClassifier("Владимир") = "М"
+    GenderClassifier("Владислав") = "М"
+    GenderClassifier("Всеволод") = "М"
+    GenderClassifier("Вячеслав") = "М"
+    GenderClassifier("Геннадий") = "М"
+    GenderClassifier("Георгий") = "М"
+    GenderClassifier("Герман") = "М"
+    GenderClassifier("Глеб") = "М"
+    GenderClassifier("Григорий") = "М"
+    GenderClassifier("Даниил") = "М"
+    GenderClassifier("Данила") = "М"
+    GenderClassifier("Денис") = "М"
+    GenderClassifier("Дмитрий") = "М"
+    GenderClassifier("Евгений") = "М"
+    GenderClassifier("Егор") = "М"
+    GenderClassifier("Ефим") = "М"
+    GenderClassifier("Захар") = "М"
+    GenderClassifier("Иван") = "М"
+    GenderClassifier("Игнат") = "М"
+    GenderClassifier("Игорь") = "М"
+    GenderClassifier("Илья") = "М"
+    GenderClassifier("Иннокентий") = "М"
+    GenderClassifier("Иосиф") = "М"
+    GenderClassifier("Кирилл") = "М"
+    GenderClassifier("Константин") = "М"
+    GenderClassifier("Кузьма") = "М"
+    GenderClassifier("Лев") = "М"
+    GenderClassifier("Леонид") = "М"
+    GenderClassifier("Лука") = "М"
+    GenderClassifier("Макар") = "М"
+    GenderClassifier("Максим") = "М"
+    GenderClassifier("Марк") = "М"
+    GenderClassifier("Матвей") = "М"
+    GenderClassifier("Михаил") = "М"
+    GenderClassifier("Никита") = "М"
+    GenderClassifier("Николай") = "М"
+    GenderClassifier("Олег") = "М"
+    GenderClassifier("Осип") = "М"
+    GenderClassifier("Павел") = "М"
+    GenderClassifier("Петр") = "М"
+    GenderClassifier("Платон") = "М"
+    GenderClassifier("Прохор") = "М"
+    GenderClassifier("Родион") = "М"
+    GenderClassifier("Роман") = "М"
+    GenderClassifier("Ростислав") = "М"
+    GenderClassifier("Руслан") = "М"
+    GenderClassifier("Савва") = "М"
+    GenderClassifier("Святослав") = "М"
+    GenderClassifier("Семен") = "М"
+    GenderClassifier("Сергей") = "М"
+    GenderClassifier("Станислав") = "М"
+    GenderClassifier("Степан") = "М"
+    GenderClassifier("Тарас") = "М"
+    GenderClassifier("Тимофей") = "М"
+    GenderClassifier("Тимур") = "М"
+    GenderClassifier("Федор") = "М"
+    GenderClassifier("Филипп") = "М"
+    GenderClassifier("Фома") = "М"
+    GenderClassifier("Эдуард") = "М"
+    GenderClassifier("Юрий") = "М"
+    GenderClassifier("Яков") = "М"
+    GenderClassifier("Ярослав") = "М"
+    
+    ' Женские имена
+    GenderClassifier("Александра") = "Ж"
+    GenderClassifier("Алена") = "Ж"
+    GenderClassifier("Алина") = "Ж"
+    GenderClassifier("Алиса") = "Ж"
+    GenderClassifier("Алла") = "Ж"
+    GenderClassifier("Анастасия") = "Ж"
+    GenderClassifier("Ангелина") = "Ж"
+    GenderClassifier("Анжела") = "Ж"
+    GenderClassifier("Анна") = "Ж"
+    GenderClassifier("Антонина") = "Ж"
+    GenderClassifier("Арина") = "Ж"
+    GenderClassifier("Валентина") = "Ж"
+    GenderClassifier("Валерия") = "Ж"
+    GenderClassifier("Варвара") = "Ж"
+    GenderClassifier("Василиса") = "Ж"
+    GenderClassifier("Вера") = "Ж"
+    GenderClassifier("Вероника") = "Ж"
+    GenderClassifier("Виктория") = "Ж"
+    GenderClassifier("Галина") = "Ж"
+    GenderClassifier("Дарья") = "Ж"
+    GenderClassifier("Диана") = "Ж"
+    GenderClassifier("Евгения") = "Ж"
+    GenderClassifier("Екатерина") = "Ж"
+    GenderClassifier("Елена") = "Ж"
+    GenderClassifier("Елизавета") = "Ж"
+    GenderClassifier("Жанна") = "Ж"
+    GenderClassifier("Зинаида") = "Ж"
+    GenderClassifier("Злата") = "Ж"
+    GenderClassifier("Зоя") = "Ж"
+    GenderClassifier("Инна") = "Ж"
+    GenderClassifier("Ирина") = "Ж"
+    GenderClassifier("Карина") = "Ж"
+    GenderClassifier("Кира") = "Ж"
+    GenderClassifier("Клавдия") = "Ж"
+    GenderClassifier("Кристина") = "Ж"
+    GenderClassifier("Ксения") = "Ж"
+    GenderClassifier("Лариса") = "Ж"
+    GenderClassifier("Лидия") = "Ж"
+    GenderClassifier("Лилия") = "Ж"
+    GenderClassifier("Любовь") = "Ж"
+    GenderClassifier("Людмила") = "Ж"
+    GenderClassifier("Майя") = "Ж"
+    GenderClassifier("Маргарита") = "Ж"
+    GenderClassifier("Марина") = "Ж"
+    GenderClassifier("Мария") = "Ж"
+    GenderClassifier("Марфа") = "Ж"
+    GenderClassifier("Милана") = "Ж"
+    GenderClassifier("Надежда") = "Ж"
+    GenderClassifier("Наталья") = "Ж"
+    GenderClassifier("Нелли") = "Ж"
+    GenderClassifier("Ника") = "Ж"
+    GenderClassifier("Нина") = "Ж"
+    GenderClassifier("Оксана") = "Ж"
+    GenderClassifier("Олеся") = "Ж"
+    GenderClassifier("Ольга") = "Ж"
+    GenderClassifier("Полина") = "Ж"
+    GenderClassifier("Раиса") = "Ж"
+    GenderClassifier("Регина") = "Ж"
+    GenderClassifier("Римма") = "Ж"
+    GenderClassifier("Роза") = "Ж"
+    GenderClassifier("Светлана") = "Ж"
+    GenderClassifier("Снежана") = "Ж"
+    GenderClassifier("София") = "Ж"
+    GenderClassifier("Софья") = "Ж"
+    GenderClassifier("Тамара") = "Ж"
+    GenderClassifier("Татьяна") = "Ж"
+    GenderClassifier("Ульяна") = "Ж"
+    GenderClassifier("Юлия") = "Ж"
+    GenderClassifier("Яна") = "Ж"
+End Sub
+
+' =====================================================
+' МОДУЛЬ СКЛОНЕНИЯ ФИО С САМООБУЧЕНИЕМ
+' Часть 3: Система самообучения и сохранения данных
+' =====================================================
+
+' ===== СИСТЕМА САМООБУЧЕНИЯ =====
+
+Sub LearnDeclension(FullName As String, CaseNumber As Integer, correctForm As String)
+    Dim key As String
+    Dim parts() As String
+    Dim correctParts() As String
+    
+    ' Проверка инициализации
+    If CustomDeclensions Is Nothing Then
+        Set CustomDeclensions = CreateObject("Scripting.Dictionary")
+    End If
+    
+    ' Сохранение в словарь
+    key = FullName & "|" & CaseNumber
+    CustomDeclensions(key) = correctForm
+    
+    ' Сохранение на лист
+    SaveCustomDeclension FullName, CaseNumber, correctForm
+    
+    ' Анализ для создания новых правил
+    parts = Split(FullName, " ")
+    correctParts = Split(correctForm, " ")
+    
+    If UBound(parts) = UBound(correctParts) Then
+        Dim i As Integer
+        For i = 0 To UBound(parts)
+            If parts(i) <> correctParts(i) Then
+                AnalyzeMorphPattern parts(i), correctParts(i), CaseNumber
+            End If
+        Next i
+    End If
+    
+    ' Обновление статистики успешности правил
+    UpdateRuleSuccessRate FullName, CaseNumber, False
+End Sub
+
+' Сохранение пользовательских склонений
+Sub SaveCustomDeclension(FullName As String, CaseNumber As Integer, correctForm As String)
+    Dim ws As Worksheet
+    Dim lastRow As Long
+    
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets("CustomDeclensions")
+    If ws Is Nothing Then
+        Set ws = ThisWorkbook.Worksheets.Add
+        ws.name = "CustomDeclensions"
+        ws.Range("A1:D1").Value = Array("ФИО", "Падеж", "Правильная форма", "Дата добавления")
+        ws.Range("A1:D1").Font.Bold = True
+        ws.Range("A1:D1").Interior.Color = RGB(200, 200, 200)
+    End If
+    On Error GoTo 0
+    
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).row + 1
+    ws.Cells(lastRow, 1).Value = FullName
+    ws.Cells(lastRow, 2).Value = CaseNumber
+    ws.Cells(lastRow, 3).Value = correctForm
+    ws.Cells(lastRow, 4).Value = Now
+    
+    ws.Columns("A:D").AutoFit
+End Sub
+
+' Загрузка пользовательских склонений
+Sub LoadCustomDeclensions()
+    Dim ws As Worksheet
+    Dim lastRow As Long
+    Dim i As Long
+    Dim key As String
+    
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets("CustomDeclensions")
+    If ws Is Nothing Then Exit Sub
+    On Error GoTo 0
+    
+    ' Проверка инициализации словаря
+    If CustomDeclensions Is Nothing Then
+        Set CustomDeclensions = CreateObject("Scripting.Dictionary")
+    End If
+    
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).row
+    
+    For i = 2 To lastRow
+        If ws.Cells(i, 1).Value <> "" Then
+            key = ws.Cells(i, 1).Value & "|" & ws.Cells(i, 2).Value
+            CustomDeclensions(key) = ws.Cells(i, 3).Value
+        End If
+    Next i
+End Sub
+
+' Анализ морфологических паттернов
+Sub AnalyzeMorphPattern(Original As String, Declined As String, CaseNumber As Integer)
+    Dim OriginalEnding As String
+    Dim DeclinedEnding As String
+    Dim stemLength As Integer
+    Dim key As String
+    
+    ' Проверка инициализации
+    If MorphPatterns Is Nothing Then
+        Set MorphPatterns = CreateObject("Scripting.Dictionary")
+    End If
+    
+    ' Определение общей основы
+    stemLength = 0
+    Do While stemLength < Len(Original) And stemLength < Len(Declined)
+        If Mid(Original, stemLength + 1, 1) = Mid(Declined, stemLength + 1, 1) Then
+            stemLength = stemLength + 1
+        Else
+            Exit Do
+        End If
+    Loop
+    
+    If stemLength > 0 And stemLength < Len(Original) Then
+        OriginalEnding = Mid(Original, stemLength + 1)
+        If stemLength < Len(Declined) Then
+            DeclinedEnding = Mid(Declined, stemLength + 1)
+        Else
+            DeclinedEnding = ""
+        End If
+        
+        ' Сохранение паттерна
+        key = OriginalEnding & "|" & CaseNumber & "|" & DeclinedEnding
+        If MorphPatterns.Exists(key) Then
+            MorphPatterns(key) = MorphPatterns(key) + 1
+        Else
+            MorphPatterns(key) = 1
+        End If
+        
+        ' Если паттерн встречается часто, создаем новое правило
+        If MorphPatterns(key) >= 3 Then
+            CreateNewRule OriginalEnding, DeclinedEnding, CaseNumber
+        End If
+        
+        ' Периодическое сохранение паттернов
+        If MorphPatterns.Count Mod 10 = 0 Then
+            SaveMorphPatterns
+        End If
+    End If
+End Sub
+
+' Создание нового правила на основе паттернов
+Sub CreateNewRule(OriginalEnding As String, DeclinedEnding As String, CaseNumber As Integer)
+    Dim ws As Worksheet
+    Dim newRow As Long
+    Dim i As Integer
+    
+    Set ws = ThisWorkbook.Worksheets("DeclensionRules")
+    newRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).row + 1
+    
+    ' Проверка, что правило еще не существует
+    For i = 2 To newRow - 1
+        If ws.Cells(i, 1).Value = OriginalEnding And _
+           ws.Cells(i, CaseNumber + 2).Value = DeclinedEnding Then
+            Exit Sub ' Правило уже существует
+        End If
+    Next i
+    
+    ' Создание нового правила
+    ws.Cells(newRow, 1).Value = OriginalEnding
+    ws.Cells(newRow, 2).Value = "?" ' Пол неизвестен
+    
+    ' Заполнение падежей
+    For i = 3 To 8
+        If i - 2 = CaseNumber Then
+            ws.Cells(newRow, i).Value = DeclinedEnding
+        Else
+            ws.Cells(newRow, i).Value = "?"
+        End If
+    Next i
+    
+    ws.Cells(newRow, 9).Value = 0 ' UsageCount
+    ws.Cells(newRow, 10).Value = 50 ' SuccessRate (начальная)
+    
+    ' Перезагрузка правил
+    LoadRulesFromSheet
+End Sub
+
+' Сохранение морфологических паттернов
+Sub SaveMorphPatterns()
+    Dim ws As Worksheet
+    Dim key As Variant
+    Dim row As Long
+    
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets("MorphPatterns")
+    If ws Is Nothing Then
+        Set ws = ThisWorkbook.Worksheets.Add
+        ws.name = "MorphPatterns"
+        ws.Range("A1:B1").Value = Array("Паттерн", "Частота")
+        ws.Range("A1:B1").Font.Bold = True
+    End If
+    On Error GoTo 0
+    
+    ' Очистка старых данных
+    ws.Range("A2:B" & ws.Rows.Count).ClearContents
+    row = 2
+    
+    ' Сохранение паттернов
+    For Each key In MorphPatterns.Keys
+        ws.Cells(row, 1).Value = key
+        ws.Cells(row, 2).Value = MorphPatterns(key)
+        row = row + 1
+    Next key
+    
+    ws.Columns("A:B").AutoFit
+End Sub
+
+' Инициализация морфологических паттернов
+Sub InitializeMorphPatterns()
+    Dim ws As Worksheet
+    Dim lastRow As Long
+    Dim i As Long
+    
+    ' Проверка инициализации
+    If MorphPatterns Is Nothing Then
+        Set MorphPatterns = CreateObject("Scripting.Dictionary")
+    End If
+    
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets("MorphPatterns")
+    If ws Is Nothing Then Exit Sub
+    On Error GoTo 0
+    
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).row
+    
+    For i = 2 To lastRow
+        If ws.Cells(i, 1).Value <> "" Then
+            MorphPatterns(ws.Cells(i, 1).Value) = ws.Cells(i, 2).Value
+        End If
+    Next i
+End Sub
+
+' ===== СТАТИСТИКА И АНАЛИТИКА =====
+
+Sub UpdateUsageStats(key As String, FromCache As Boolean)
+    ' Проверка инициализации
+    If UsageStats Is Nothing Then
+        Set UsageStats = CreateObject("Scripting.Dictionary")
+    End If
+    
+    If UsageStats.Exists(key) Then
+        UsageStats(key) = UsageStats(key) + 1
+    Else
+        UsageStats(key) = 1
+    End If
+    
+    ' Периодическое сохранение статистики
+    If UsageStats.Count Mod 100 = 0 Then
+        SaveUsageStatistics
+    End If
+End Sub
+
+Sub SaveUsageStatistics()
+    Dim ws As Worksheet
+    Dim key As Variant
+    Dim row As Long
+    
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets("UsageStatistics")
+    If ws Is Nothing Then
+        Set ws = ThisWorkbook.Worksheets.Add
+        ws.name = "UsageStatistics"
+        ws.Range("A1:C1").Value = Array("Ключ", "Использований", "Дата обновления")
+        ws.Range("A1:C1").Font.Bold = True
+    End If
+    On Error GoTo 0
+    
+    ws.Range("A2:C" & ws.Rows.Count).ClearContents
+    row = 2
+    
+    For Each key In UsageStats.Keys
+        ws.Cells(row, 1).Value = key
+        ws.Cells(row, 2).Value = UsageStats(key)
+        ws.Cells(row, 3).Value = Now
+        row = row + 1
+    Next key
+    
+    ws.Columns("A:C").AutoFit
+End Sub
+
+Sub LoadUsageStatistics()
+    Dim ws As Worksheet
+    Dim lastRow As Long
+    Dim i As Long
+    
+    ' Проверка инициализации
+    If UsageStats Is Nothing Then
+        Set UsageStats = CreateObject("Scripting.Dictionary")
+    End If
+    
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets("UsageStatistics")
+    If ws Is Nothing Then Exit Sub
+    On Error GoTo 0
+    
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).row
+    
+    For i = 2 To lastRow
+        If ws.Cells(i, 1).Value <> "" Then
+            UsageStats(ws.Cells(i, 1).Value) = ws.Cells(i, 2).Value
+        End If
+    Next i
+End Sub
+
+' Обновление успешности правил
+Sub UpdateRuleSuccessRate(FullName As String, CaseNumber As Integer, Success As Boolean)
+    Dim parts() As String
+    Dim i As Integer, j As Integer
+    Dim ruleIndex As Integer
+    
+    parts = Split(FullName, " ")
+    
+    For i = 0 To UBound(parts)
+        ruleIndex = FindRuleIndex(parts(i))
+        If ruleIndex > -1 Then
+            With Rules(ruleIndex)
+                If Success Then
+                    .SuccessRate = (.SuccessRate * .UsageCount + 100) / (.UsageCount + 1)
+                Else
+                    .SuccessRate = (.SuccessRate * .UsageCount) / (.UsageCount + 1)
+                End If
+            End With
+        End If
+    Next i
+    
+    ' Периодическое сохранение обновленных правил
+    If Application.WorksheetFunction.RandBetween(1, 20) = 1 Then
+        SaveRulesToSheet
+    End If
+End Sub
+
+' Поиск индекса правила
+Function FindRuleIndex(Word As String) As Integer
+    Dim i As Integer
+    
+    ' Проверка инициализации
+    If Not IsArray(Rules) Then
+        FindRuleIndex = -1
+        Exit Function
+    End If
+    
+    For i = LBound(Rules) To UBound(Rules)
+        If Right(Word, Len(Rules(i).Ending)) = Rules(i).Ending Then
+            FindRuleIndex = i
+            Exit Function
+        End If
+    Next i
+    FindRuleIndex = -1
+End Function
+
+' Сохранение правил обратно на лист
+Sub SaveRulesToSheet()
+    Dim ws As Worksheet
+    Dim i As Long
+    
+    Set ws = ThisWorkbook.Worksheets("DeclensionRules")
+    
+    For i = LBound(Rules) To UBound(Rules)
+        With Rules(i)
+            ws.Cells(i + 1, 9).Value = .UsageCount
+            ws.Cells(i + 1, 10).Value = .SuccessRate
+        End With
+    Next i
+End Sub
+
+
+
+
+' =====================================================
+' МОДУЛЬ СКЛОНЕНИЯ ФИО С САМООБУЧЕНИЕМ
+' Часть 4: Интерфейс пользователя и тестирование
+' =====================================================
+
+' ===== ТЕСТИРОВАНИЕ СИСТЕМЫ =====
+
+Sub TestSystem()
+    Dim testResult As String
+    
+    ' Инициализация
+    ManualInit
+    
+    ' Тест 1: Простое склонение мужского ФИО
+    testResult = DeclineName("Иванов Иван Иванович", 2)
+    MsgBox "Тест 1 - Родительный падеж:" & vbCrLf & _
+           "Исходное: Иванов Иван Иванович" & vbCrLf & _
+           "Результат: " & testResult & vbCrLf & _
+           "Ожидалось: Иванова Ивана Ивановича", vbInformation, "Тест системы"
+    
+    ' Тест 2: Женское имя
+    testResult = DeclineName("Петрова Анна Сергеевна", 3, "Ж")
+    MsgBox "Тест 2 - Дательный падеж:" & vbCrLf & _
+           "Исходное: Петрова Анна Сергеевна" & vbCrLf & _
+           "Результат: " & testResult & vbCrLf & _
+           "Ожидалось: Петровой Анне Сергеевне", vbInformation, "Тест системы"
+    
+    ' Тест 3: Автоопределение пола
+    testResult = DeclineName("Сидоров Петр Петрович", 5)
+    MsgBox "Тест 3 - Творительный падеж (автоопределение пола):" & vbCrLf & _
+           "Исходное: Сидоров Петр Петрович" & vbCrLf & _
+           "Результат: " & testResult & vbCrLf & _
+           "Ожидалось: Сидоровым Петром Петровичем", vbInformation, "Тест системы"
+End Sub
+
+' Тестирование с обучением
+Sub TestDeclensionWithLearning()
+    Dim name As String
+    Dim caseNum As Integer
+    Dim result As String
+    Dim correctForm As String
+    Dim response As VbMsgBoxResult
+    Dim gender As String
+    
+    name = InputBox("Введите ФИО в именительном падеже:", "Склонение ФИО", "Иванов Иван Иванович")
+    If name = "" Then Exit Sub
+    
+    gender = InputBox("Укажите пол (М/Ж) или оставьте пустым для автоопределения:", "Пол")
+    
+    caseNum = Val(InputBox("Введите номер падежа (1-6):" & vbCrLf & _
+        "1 - Именительный (кто? что?)" & vbCrLf & _
+        "2 - Родительный (кого? чего?)" & vbCrLf & _
+        "3 - Дательный (кому? чему?)" & vbCrLf & _
+        "4 - Винительный (кого? что?)" & vbCrLf & _
+        "5 - Творительный (кем? чем?)" & vbCrLf & _
+        "6 - Предложный (о ком? о чем?)", "Выбор падежа", "2"))
+    
+    If caseNum < 1 Or caseNum > 6 Then
+        MsgBox "Неверный номер падежа!"
+        Exit Sub
+    End If
+    
+    result = DeclineName(name, caseNum, gender)
+    
+    response = MsgBox("Результат склонения:" & vbCrLf & vbCrLf & _
+        "Исходное: " & name & vbCrLf & _
+        "Результат: " & result & vbCrLf & vbCrLf & _
+        "Это правильно?", vbYesNo + vbQuestion, "Проверка результата")
+    
+    If response = vbNo Then
+        correctForm = InputBox("Введите правильную форму:", "Обучение системы", result)
+        If correctForm <> "" Then
+            LearnDeclension name, caseNum, correctForm
+            MsgBox "Спасибо! Система запомнила правильную форму." & vbCrLf & _
+                   "При следующем склонении будет использована эта форма.", vbInformation
+        End If
+    Else
+        UpdateRuleSuccessRate name, caseNum, True
+        MsgBox "Отлично! Статистика успешности обновлена.", vbInformation
+    End If
+End Sub
+
+' ===== МАССОВАЯ ОБРАБОТКА =====
+
+Sub DeclineRangeWithValidation()
+    Dim sourceRange As Range
+    Dim cell As Range
+    Dim caseNum As Integer
+    Dim gender As String
+    Dim ws As Worksheet
+    Dim errorCount As Integer
+    Dim successCount As Integer
+    
+    On Error Resume Next
+    Set sourceRange = Application.InputBox("Выберите диапазон с ФИО:", Type:=8)
+    If sourceRange Is Nothing Then Exit Sub
+    On Error GoTo 0
+    
+    caseNum = Val(InputBox("Введите номер падежа (1-6):" & vbCrLf & _
+        "1 - Именительный" & vbCrLf & _
+        "2 - Родительный" & vbCrLf & _
+        "3 - Дательный" & vbCrLf & _
+        "4 - Винительный" & vbCrLf & _
+        "5 - Творительный" & vbCrLf & _
+        "6 - Предложный", "Выбор падежа", "2"))
+    
+    If caseNum < 1 Or caseNum > 6 Then
+        MsgBox "Неверный номер падежа!"
+        Exit Sub
+    End If
+    
+    gender = InputBox("Укажите пол (М/Ж) для всех или оставьте пустым для автоопределения:", "Пол")
+    
+    Application.ScreenUpdating = False
+    errorCount = 0
+    successCount = 0
+    
+    For Each cell In sourceRange
+        If cell.Value <> "" Then
+            On Error Resume Next
+            cell.Offset(0, 1).Value = DeclineName(cell.Value, caseNum, gender)
+            If Err.Number <> 0 Then
+                cell.Offset(0, 1).Value = "ОШИБКА"
+                cell.Offset(0, 1).Interior.Color = RGB(255, 200, 200)
+                errorCount = errorCount + 1
+                Err.Clear
+            Else
+                cell.Offset(0, 1).Interior.Color = RGB(200, 255, 200)
+                successCount = successCount + 1
+            End If
+            On Error GoTo 0
+        End If
+    Next cell
+    
+    Application.ScreenUpdating = True
+    
+    MsgBox "Обработка завершена!" & vbCrLf & _
+           "Успешно: " & successCount & vbCrLf & _
+           "Ошибок: " & errorCount, _
+           IIf(errorCount > 0, vbExclamation, vbInformation), "Результат"
+End Sub
+
+' ===== СОЗДАНИЕ ИНТЕРФЕЙСА НА ЛИСТЕ =====
+
+Sub CreateDeclensionInterface()
+    Dim ws As Worksheet
+    Dim btn As Object
+    Dim ddl As Object
+    
+    ' Создаем или выбираем лист для интерфейса
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets("Склонение ФИО")
+    If ws Is Nothing Then
+        Set ws = ThisWorkbook.Worksheets.Add
+        ws.name = "Склонение ФИО"
+    End If
+    On Error GoTo 0
+    
+    ' Очищаем лист
+    ws.Cells.Clear
+    
+    ' Создаем заголовок
+    With ws.Range("A1:F1")
+        .Merge
+        .Value = "СИСТЕМА СКЛОНЕНИЯ ФИО"
+        .Font.Size = 16
+        .Font.Bold = True
+        .HorizontalAlignment = xlCenter
+        .Interior.Color = RGB(200, 200, 255)
+    End With
+    
+    ' Создаем заголовки таблицы
+    ws.Range("A3").Value = "ФИО (Именительный падеж)"
+    ws.Range("B3").Value = "Пол (М/Ж)"
+    ws.Range("C3").Value = "Падеж"
+    ws.Range("D3").Value = "Результат"
+    ws.Range("E3").Value = "Статус"
+    
+    ' Форматирование заголовков
+    With ws.Range("A3:E3")
+        .Font.Bold = True
+        .Interior.Color = RGB(220, 220, 220)
+        .Borders.LineStyle = xlContinuous
+    End With
+    
+    ' Установка ширины столбцов
+    ws.Columns("A").ColumnWidth = 30
+    ws.Columns("B").ColumnWidth = 10
+    ws.Columns("C").ColumnWidth = 15
+    ws.Columns("D").ColumnWidth = 30
+    ws.Columns("E").ColumnWidth = 20
+    
+    ' Создаем выпадающий список для падежей
+    With ws.Range("C4:C100").Validation
+        .Delete
+        .Add Type:=xlValidateList, Formula1:="Именительный,Родительный,Дательный,Винительный,Творительный,Предложный"
+        .InCellDropdown = True
+    End With
+    
+    ' Создаем выпадающий список для пола
+    With ws.Range("B4:B100").Validation
+        .Delete
+        .Add Type:=xlValidateList, Formula1:="М,Ж,Авто"
+        .InCellDropdown = True
+    End With
+    
+    ' Добавляем примеры
+    ws.Range("A4").Value = "Иванов Иван Иванович"
+    ws.Range("B4").Value = "М"
+    ws.Range("C4").Value = "Родительный"
+    
+    ws.Range("A5").Value = "Петрова Анна Сергеевна"
+    ws.Range("B5").Value = "Ж"
+    ws.Range("C5").Value = "Дательный"
+    
+    ws.Range("A6").Value = "Сидоров Петр Петрович"
+    ws.Range("B6").Value = "Авто"
+    ws.Range("C6").Value = "Творительный"
+    
+    ' Создаем кнопки
+    ws.Buttons.Delete
+    
+    ' Кнопка "Склонить"
+    Set btn = ws.Buttons.Add(10, 50, 100, 30)
+    btn.Caption = "Склонить"
+    btn.OnAction = "ProcessDeclension"
+    
+    ' Кнопка "Склонить все"
+    Set btn = ws.Buttons.Add(120, 50, 100, 30)
+    btn.Caption = "Склонить все"
+    btn.OnAction = "ProcessAllDeclensions"
+    
+    ' Кнопка "Обучить систему"
+    Set btn = ws.Buttons.Add(230, 50, 120, 30)
+    btn.Caption = "Обучить систему"
+    btn.OnAction = "TrainSystem"
+    
+    ' Кнопка "Статистика"
+    Set btn = ws.Buttons.Add(360, 50, 100, 30)
+    btn.Caption = "Статистика"
+    btn.OnAction = "AnalyzeDeclensionQuality"
+    
+    ' Кнопка "Экспорт базы"
+    Set btn = ws.Buttons.Add(470, 50, 100, 30)
+    btn.Caption = "Экспорт базы"
+    btn.OnAction = "ExportKnowledgeBase"
+    
+    ' Добавляем инструкции
+    ws.Range("A15").Value = "Инструкция:"
+    ws.Range("A16").Value = "1. Введите ФИО в столбец A"
+    ws.Range("A17").Value = "2. Выберите пол (М/Ж) или Авто для автоопределения"
+    ws.Range("A18").Value = "3. Выберите падеж из списка"
+    ws.Range("A19").Value = "4. Нажмите 'Склонить' для одной строки или 'Склонить все' для всех"
+    ws.Range("A20").Value = "5. Если результат неверный, исправьте его и нажмите 'Обучить систему'"
+    
+    ws.Range("A15:A20").Font.Italic = True
+    ws.Range("A15").Font.Bold = True
+    
+    ' Добавляем легенду падежей
+    ws.Range("G3").Value = "Падежи:"
+    ws.Range("G4").Value = "Именительный - кто? что?"
+    ws.Range("G5").Value = "Родительный - кого? чего?"
+    ws.Range("G6").Value = "Дательный - кому? чему?"
+    ws.Range("G7").Value = "Винительный - кого? что?"
+    ws.Range("G8").Value = "Творительный - кем? чем?"
+    ws.Range("G9").Value = "Предложный - о ком? о чем?"
+    
+    ws.Range("G3").Font.Bold = True
+    ws.Range("G4:G9").Font.Size = 9
+    
+    ' Добавляем примеры использования в формулах
+    ws.Range("G11").Value = "Примеры формул:"
+    ws.Range("G11").Font.Bold = True
+    ws.Range("G12").Value = "=DeclineName(A4,2)"
+    ws.Range("G13").Value = "=DeclineName(A4,3,""М"")"
+    ws.Range("G14").Value = "=DeclineNameSafe(A4,4)"
+    ws.Range("G12:G14").Font.Size = 9
+    ws.Range("G12:G14").Font.name = "Courier New"
+    
+    ws.Activate
+    MsgBox "Интерфейс создан на листе 'Склонение ФИО'", vbInformation
+End Sub
+
+' ===== ОБРАБОТЧИКИ КНОПОК ИНТЕРФЕЙСА =====
+
+' Обработка одной строки
+Sub ProcessDeclension()
+    Dim ws As Worksheet
+    Dim currentRow As Long
+    Dim fio As String
+    Dim gender As String
+    Dim caseText As String
+    Dim caseNum As Integer
+    Dim result As String
+    
+    Set ws = ThisWorkbook.Worksheets("Склонение ФИО")
+    currentRow = ActiveCell.row
+    
+    If currentRow < 4 Then
+        MsgBox "Выберите строку с данными (начиная с 4-й строки)"
+        Exit Sub
+    End If
+    
+    fio = ws.Cells(currentRow, 1).Value
+    gender = ws.Cells(currentRow, 2).Value
+    caseText = ws.Cells(currentRow, 3).Value
+    
+    If fio = "" Then
+        MsgBox "Введите ФИО"
+        Exit Sub
+    End If
+    
+    ' Преобразуем текст падежа в число
+    caseNum = GetCaseNumber(caseText)
+    
+    If caseNum = 0 Then
+        MsgBox "Выберите падеж"
+        Exit Sub
+    End If
+    
+    ' Обработка пола
+    If gender = "Авто" Then gender = ""
+    
+    ' Склоняем
+    result = DeclineName(fio, caseNum, gender)
+    
+    ' Записываем результат
+    ws.Cells(currentRow, 4).Value = result
+    ws.Cells(currentRow, 5).Value = "OK"
+    ws.Cells(currentRow, 5).Interior.Color = RGB(200, 255, 200)
+End Sub
+
+' Обработка всех строк
+Sub ProcessAllDeclensions()
+    Dim ws As Worksheet
+    Dim lastRow As Long
+    Dim i As Long
+    Dim fio As String
+    Dim gender As String
+    Dim caseText As String
+    Dim caseNum As Integer
+    Dim result As String
+    Dim errorCount As Integer
+    Dim successCount As Integer
+    
+    Set ws = ThisWorkbook.Worksheets("Склонение ФИО")
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).row
+    
+    If lastRow < 4 Then
+        MsgBox "Нет данных для обработки"
+        Exit Sub
+    End If
+    
+    Application.ScreenUpdating = False
+    errorCount = 0
+    successCount = 0
+    
+    For i = 4 To lastRow
+        fio = ws.Cells(i, 1).Value
+        gender = ws.Cells(i, 2).Value
+        caseText = ws.Cells(i, 3).Value
+        
+        If fio <> "" And caseText <> "" Then
+            caseNum = GetCaseNumber(caseText)
+            
+            If caseNum > 0 Then
+                If gender = "Авто" Then gender = ""
+                
+                On Error Resume Next
+                result = DeclineName(fio, caseNum, gender)
+                
+                If Err.Number = 0 Then
+                    ws.Cells(i, 4).Value = result
+                    ws.Cells(i, 5).Value = "OK"
+                    ws.Cells(i, 5).Interior.Color = RGB(200, 255, 200)
+                    successCount = successCount + 1
+                Else
+                    ws.Cells(i, 5).Value = "Ошибка"
+                    ws.Cells(i, 5).Interior.Color = RGB(255, 200, 200)
+                    errorCount = errorCount + 1
+                End If
+                On Error GoTo 0
+            End If
+        End If
+    Next i
+    
+    Application.ScreenUpdating = True
+    
+    MsgBox "Обработка завершена!" & vbCrLf & _
+           "Успешно: " & successCount & vbCrLf & _
+           "Ошибок: " & errorCount, _
+           IIf(errorCount > 0, vbExclamation, vbInformation), "Результат"
+End Sub
+
+' Обучение системы
+Sub TrainSystem()
+    Dim ws As Worksheet
+    Dim currentRow As Long
+    Dim fio As String
+    Dim caseText As String
+    Dim caseNum As Integer
+    Dim correctForm As String
+    
+    Set ws = ThisWorkbook.Worksheets("Склонение ФИО")
+    currentRow = ActiveCell.row
+    
+    If currentRow < 4 Then
+        MsgBox "Выберите строку с данными"
+        Exit Sub
+    End If
+    
+    fio = ws.Cells(currentRow, 1).Value
+    caseText = ws.Cells(currentRow, 3).Value
+    correctForm = ws.Cells(currentRow, 4).Value
+    
+    If fio = "" Or correctForm = "" Then
+        MsgBox "Убедитесь, что заполнены ФИО и результат"
+        Exit Sub
+    End If
+    
+    caseNum = GetCaseNumber(caseText)
+    
+    If caseNum > 0 Then
+        LearnDeclension fio, caseNum, correctForm
+        ws.Cells(currentRow, 5).Value = "Обучен"
+        ws.Cells(currentRow, 5).Interior.Color = RGB(200, 200, 255)
+        MsgBox "Система обучена! Теперь '" & fio & "' в " & caseText & " падеже будет: " & correctForm, vbInformation
+    End If
+End Sub
+
+' Преобразование названия падежа в число
+Function GetCaseNumber(caseText As String) As Integer
+    Select Case caseText
+        Case "Именительный": GetCaseNumber = 1
+        Case "Родительный": GetCaseNumber = 2
+        Case "Дательный": GetCaseNumber = 3
+        Case "Винительный": GetCaseNumber = 4
+        Case "Творительный": GetCaseNumber = 5
+        Case "Предложный": GetCaseNumber = 6
+        Case Else: GetCaseNumber = 0
+    End Select
+End Function
+
+' ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
+
+' Упрощенная версия для тестирования
+Function SimpleDecline(FullName As String, CaseNumber As Integer) As String
+    On Error GoTo ErrorHandler
+    
+    ' Простая проверка
+    If Trim(FullName) = "" Or CaseNumber < 1 Or CaseNumber > 6 Then
+        SimpleDecline = "Ошибка входных данных"
+        Exit Function
+    End If
+    
+    ' Базовое склонение для теста
+    Dim caseName As String
+    Select Case CaseNumber
+        Case 1: caseName = "Им."
+        Case 2: caseName = "Род."
+        Case 3: caseName = "Дат."
+        Case 4: caseName = "Вин."
+        Case 5: caseName = "Тв."
+        Case 6: caseName = "Пр."
+    End Select
+    
+    SimpleDecline = FullName & " (" & caseName & ")"
+    Exit Function
+    
+ErrorHandler:
+    SimpleDecline = "Ошибка"
+End Function
+
+' Сброс системы
+Sub ResetSystem()
+    Dim response As VbMsgBoxResult
+    
+    response = MsgBox("Это сбросит все настройки системы. Продолжить?", _
+                      vbYesNo + vbQuestion, "Сброс системы")
+    
+    If response = vbYes Then
+        ' Очистка словарей
+        Set CustomDeclensions = Nothing
+        Set UsageStats = Nothing
+        Set MorphPatterns = Nothing
+        Set GenderClassifier = Nothing
+        
+        ' Переинициализация
+        ManualInit
+        
+        MsgBox "Система сброшена и переинициализирована", vbInformation
+    End If
+End Sub
+
+
+' =====================================================
+' МОДУЛЬ СКЛОНЕНИЯ ФИО С САМООБУЧЕНИЕМ
+' Часть 5: Экспорт/импорт данных и анализ качества
+' =====================================================
+
+' ===== ЭКСПОРТ И ИМПОРТ БАЗЫ ЗНАНИЙ =====
+
+Sub ExportKnowledgeBase()
+    Dim filePath As String
+    Dim fileNum As Integer
+    Dim i As Long
+    Dim key As Variant
+    
+    filePath = Application.GetSaveAsFilename("DeclensionKnowledge_" & Format(Now, "yyyymmdd"), _
+                                            "Text Files (*.txt), *.txt", , "Сохранить базу знаний")
+    
+    If filePath = "False" Then Exit Sub
+    
+    fileNum = FreeFile
+    Open filePath For Output As fileNum
+    
+    ' Запись заголовка
+    Print #fileNum, "DECLENSION KNOWLEDGE BASE"
+    Print #fileNum, "Version: 2.0"
+    Print #fileNum, "Export Date: " & Now
+    Print #fileNum, String(60, "=")
+    
+    ' Экспорт правил
+    Print #fileNum, ""
+    Print #fileNum, "[RULES]"
+    Print #fileNum, "Ending|Gender|Case1|Case2|Case3|Case4|Case5|Case6|UsageCount|SuccessRate"
+    
+    If IsArray(Rules) Then
+        For i = LBound(Rules) To UBound(Rules)
+            With Rules(i)
+                Print #fileNum, .Ending & "|" & .gender & "|" & _
+                    .Cases(1) & "|" & .Cases(2) & "|" & .Cases(3) & "|" & _
+                    .Cases(4) & "|" & .Cases(5) & "|" & .Cases(6) & "|" & _
+                    .UsageCount & "|" & .SuccessRate
+            End With
+        Next i
+    End If
+    
+    ' Экспорт пользовательских склонений
+    Print #fileNum, ""
+    Print #fileNum, "[CUSTOM_DECLENSIONS]"
+    Print #fileNum, "Key|Value"
+    
+    If Not CustomDeclensions Is Nothing Then
+        For Each key In CustomDeclensions.Keys
+            Print #fileNum, key & "|" & CustomDeclensions(key)
+        Next key
+    End If
+    
+    ' Экспорт морфологических паттернов
+    Print #fileNum, ""
+    Print #fileNum, "[MORPH_PATTERNS]"
+    Print #fileNum, "Pattern|Frequency"
+    
+    If Not MorphPatterns Is Nothing Then
+        For Each key In MorphPatterns.Keys
+            Print #fileNum, key & "|" & MorphPatterns(key)
+        Next key
+    End If
+    
+    ' Экспорт статистики использования
+    Print #fileNum, ""
+    Print #fileNum, "[USAGE_STATS]"
+    Print #fileNum, "Key|Count"
+    
+    If Not UsageStats Is Nothing Then
+        For Each key In UsageStats.Keys
+            Print #fileNum, key & "|" & UsageStats(key)
+        Next key
+    End If
+    
+    Close fileNum
+    
+    MsgBox "База знаний успешно экспортирована в файл:" & vbCrLf & filePath, vbInformation
+End Sub
+
+Sub ImportKnowledgeBase()
+    Dim filePath As String
+    Dim fileNum As Integer
+    Dim lineText As String
+    Dim parts() As String
+    Dim section As String
+    Dim ws As Worksheet
+    Dim row As Long
+    
+    filePath = Application.GetOpenFilename("Text Files (*.txt), *.txt", , "Открыть базу знаний")
+    If filePath = "False" Then Exit Sub
+    
+    ' Очистка существующих данных
+    If MsgBox("Это заменит текущую базу знаний. Продолжить?", vbYesNo + vbQuestion) = vbNo Then
+        Exit Sub
+    End If
+    
+    fileNum = FreeFile
+    Open filePath For Input As fileNum
+    
+    ' Инициализация
+    Set CustomDeclensions = CreateObject("Scripting.Dictionary")
+    Set MorphPatterns = CreateObject("Scripting.Dictionary")
+    Set UsageStats = CreateObject("Scripting.Dictionary")
+    
+    section = ""
+    
+    Do While Not EOF(fileNum)
+        Line Input #fileNum, lineText
+        
+        ' Определение секции
+        If Left(lineText, 1) = "[" And Right(lineText, 1) = "]" Then
+            section = Mid(lineText, 2, Len(lineText) - 2)
+            Line Input #fileNum, lineText ' Пропускаем заголовок
+        ElseIf Len(Trim(lineText)) > 0 And Left(lineText, 1) <> "=" Then
+            parts = Split(lineText, "|")
+            
+            Select Case section
+                Case "RULES"
+                    If UBound(parts) >= 9 Then
+                        ' Импорт правил на лист
+                        Set ws = ThisWorkbook.Worksheets("DeclensionRules")
+                        row = ws.Cells(ws.Rows.Count, 1).End(xlUp).row + 1
+                        ws.Cells(row, 1).Resize(1, 10).Value = parts
+                    End If
+                    
+                Case "CUSTOM_DECLENSIONS"
+                    If UBound(parts) >= 1 Then
+                        CustomDeclensions(parts(0)) = parts(1)
+                    End If
+                    
+                Case "MORPH_PATTERNS"
+                    If UBound(parts) >= 1 Then
+                        MorphPatterns(parts(0)) = Val(parts(1))
+                    End If
+                    
+                Case "USAGE_STATS"
+                    If UBound(parts) >= 1 Then
+                        UsageStats(parts(0)) = Val(parts(1))
+                    End If
+            End Select
+        End If
+    Loop
+    
+    Close fileNum
+    
+    ' Перезагрузка правил
+    LoadRulesFromSheet
+    
+    ' Сохранение импортированных данных
+    SaveCustomDeclensions
+    SaveMorphPatterns
+    SaveUsageStatistics
+    
+    MsgBox "База знаний успешно импортирована из файла:" & vbCrLf & filePath, vbInformation
+End Sub
+
+' Сохранение всех пользовательских склонений
+Sub SaveCustomDeclensions()
+    Dim ws As Worksheet
+    Dim key As Variant
+    Dim parts() As String
+    Dim row As Long
+    
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets("CustomDeclensions")
+    If ws Is Nothing Then
+        Set ws = ThisWorkbook.Worksheets.Add
+        ws.name = "CustomDeclensions"
+        ws.Range("A1:D1").Value = Array("ФИО", "Падеж", "Правильная форма", "Дата добавления")
+    End If
+    On Error GoTo 0
+    
+    ' Очистка старых данных
+    ws.Range("A2:D" & ws.Rows.Count).ClearContents
+    row = 2
+    
+    ' Сохранение текущих данных
+    For Each key In CustomDeclensions.Keys
+        parts = Split(key, "|")
+        If UBound(parts) >= 1 Then
+            ws.Cells(row, 1).Value = parts(0)
+            ws.Cells(row, 2).Value = parts(1)
+            ws.Cells(row, 3).Value = CustomDeclensions(key)
+            ws.Cells(row, 4).Value = Now
+            row = row + 1
+        End If
+    Next key
+    
+    ws.Columns("A:D").AutoFit
+End Sub
+
+' ===== АНАЛИЗ КАЧЕСТВА СИСТЕМЫ =====
+
+Sub AnalyzeDeclensionQuality()
+    Dim ws As Worksheet
+    Dim reportWs As Worksheet
+    Dim i As Long
+    Dim totalUsage As Long
+    Dim avgSuccess As Double
+    Dim ruleCount As Long
+    
+    ' Создание отчета
+    On Error Resume Next
+    Set reportWs = ThisWorkbook.Worksheets("Отчет о качестве")
+    If Not reportWs Is Nothing Then
+        reportWs.Cells.Clear
+    Else
+        Set reportWs = ThisWorkbook.Worksheets.Add
+        reportWs.name = "Отчет о качестве"
+    End If
+    On Error GoTo 0
+    
+    ' Заголовок отчета
+    With reportWs
+        .Range("A1").Value = "ОТЧЕТ О КАЧЕСТВЕ СИСТЕМЫ СКЛОНЕНИЯ"
+        .Range("A2").Value = "Дата создания: " & Now
+        .Range("A1:A2").Font.Bold = True
+        .Range("A1").Font.Size = 14
+        
+        ' === СТАТИСТИКА ПО ПРАВИЛАМ ===
+        .Range("A4").Value = "1. Статистика использования правил:"
+        .Range("A4").Font.Bold = True
+        .Range("A5:E5").Value = Array("Окончание", "Род", "Использований", "Успешность %", "Рейтинг")
+        .Range("A5:E5").Font.Bold = True
+        .Range("A5:E5").Interior.Color = RGB(200, 200, 200)
+        
+        Set ws = ThisWorkbook.Worksheets("DeclensionRules")
+        totalUsage = 0
+        avgSuccess = 0
+        ruleCount = 0
+        
+        For i = 2 To ws.Cells(ws.Rows.Count, 1).End(xlUp).row
+            .Cells(i + 4, 1).Value = ws.Cells(i, 1).Value
+            .Cells(i + 4, 2).Value = ws.Cells(i, 2).Value
+            .Cells(i + 4, 3).Value = ws.Cells(i, 9).Value
+            .Cells(i + 4, 4).Value = ws.Cells(i, 10).Value
+            .Cells(i + 4, 5).Formula = "=C" & (i + 4) & "*D" & (i + 4) & "/100"
+            
+            totalUsage = totalUsage + ws.Cells(i, 9).Value
+            avgSuccess = avgSuccess + ws.Cells(i, 10).Value
+            ruleCount = ruleCount + 1
+        Next i
+        
+        ' Форматирование таблицы
+        With .Range("A5:E" & (i + 3))
+            .Borders.LineStyle = xlContinuous
+            .Columns.AutoFit
+        End With
+        
+        ' === СВОДНАЯ СТАТИСТИКА ===
+        Dim summaryRow As Long
+        summaryRow = i + 6
+        
+        .Range("A" & summaryRow).Value = "2. Сводная статистика:"
+        .Range("A" & summaryRow).Font.Bold = True
+        
+        summaryRow = summaryRow + 1
+        .Range("A" & summaryRow).Value = "Общее количество правил:"
+        .Range("C" & summaryRow).Value = ruleCount
+        
+        summaryRow = summaryRow + 1
+        .Range("A" & summaryRow).Value = "Общее количество использований правил:"
+        .Range("C" & summaryRow).Value = totalUsage
+        
+        summaryRow = summaryRow + 1
+        .Range("A" & summaryRow).Value = "Средняя успешность правил:"
+        If ruleCount > 0 Then
+            .Range("C" & summaryRow).Value = Format(avgSuccess / ruleCount, "0.00") & "%"
+        Else
+            .Range("C" & summaryRow).Value = "Н/Д"
+        End If
+        
+        summaryRow = summaryRow + 1
+        .Range("A" & summaryRow).Value = "Количество пользовательских исправлений:"
+        If Not CustomDeclensions Is Nothing Then
+            .Range("C" & summaryRow).Value = CustomDeclensions.Count
+        Else
+            .Range("C" & summaryRow).Value = 0
+        End If
+        
+        summaryRow = summaryRow + 1
+        .Range("A" & summaryRow).Value = "Количество морфологических паттернов:"
+        If Not MorphPatterns Is Nothing Then
+            .Range("C" & summaryRow).Value = MorphPatterns.Count
+        Else
+            .Range("C" & summaryRow).Value = 0
+        End If
+        
+        ' === ТОП ИСПОЛЬЗОВАННЫХ ПРАВИЛ ===
+        summaryRow = summaryRow + 3
+        .Range("A" & summaryRow).Value = "3. Топ-10 наиболее используемых правил:"
+        .Range("A" & summaryRow).Font.Bold = True
+        
+        ' Сортировка и вывод топ-10
+        Dim topRange As Range
+        Set topRange = .Range("A6:E" & (i + 3))
+        topRange.Sort Key1:=.Range("C6"), Order1:=xlDescending, Header:=xlNo
+        
+        ' === ПРОБЛЕМНЫЕ ПРАВИЛА ===
+        summaryRow = summaryRow + 13
+        .Range("A" & summaryRow).Value = "4. Правила с низкой успешностью (< 70%):"
+        .Range("A" & summaryRow).Font.Bold = True
+        
+        summaryRow = summaryRow + 1
+        Dim problemCount As Integer
+        problemCount = 0
+        
+        For i = 6 To .Cells(.Rows.Count, 1).End(xlUp).row
+            If .Cells(i, 4).Value < 70 And .Cells(i, 3).Value > 0 Then
+                problemCount = problemCount + 1
+                .Cells(summaryRow + problemCount, 1).Value = .Cells(i, 1).Value
+                .Cells(summaryRow + problemCount, 2).Value = .Cells(i, 2).Value
+                .Cells(summaryRow + problemCount, 3).Value = .Cells(i, 4).Value & "%"
+            End If
+        Next i
+        
+        If problemCount = 0 Then
+            .Range("A" & (summaryRow + 1)).Value = "Нет проблемных правил"
+        End If
+        
+        ' Форматирование всего отчета
+        .Columns("A:E").AutoFit
+        .Range("A1").Select
+    End With
+    
+    MsgBox "Отчет о качестве системы создан на листе 'Отчет о качестве'", vbInformation
+End Sub
+
+' Оптимизация базы данных
+Sub OptimizeDatabase()
+    Dim response As VbMsgBoxResult
+    Dim ws As Worksheet
+    Dim i As Long
+    Dim deletedCount As Integer
+    
+    response = MsgBox("Это удалит неиспользуемые правила и оптимизирует базу данных." & vbCrLf & _
+                      "Рекомендуется сначала экспортировать базу." & vbCrLf & vbCrLf & _
+                      "Продолжить?", vbYesNo + vbQuestion, "Оптимизация")
+    
+    If response = vbYes Then
+        deletedCount = 0
+        
+        ' Удаление правил с низкой успешностью и малым использованием
+        Set ws = ThisWorkbook.Worksheets("DeclensionRules")
+        
+        For i = ws.Cells(ws.Rows.Count, 1).End(xlUp).row To 2 Step -1
+            ' Удаляем правила с успешностью < 30% и менее 5 использований
+            If ws.Cells(i, 10).Value < 30 And ws.Cells(i, 9).Value < 5 Then
+                ws.Rows(i).Delete
+                deletedCount = deletedCount + 1
+            ' Удаляем неиспользуемые правила старше определенного периода
+            ElseIf ws.Cells(i, 9).Value = 0 Then
+                ws.Rows(i).Delete
+                deletedCount = deletedCount + 1
+            End If
+        Next i
+        
+        ' Очистка старой статистики
+        If Not UsageStats Is Nothing Then
+            Dim key As Variant
+            Dim keysToDelete As Collection
+            Set keysToDelete = New Collection
+            
+            ' Собираем ключи для удаления
+            For Each key In UsageStats.Keys
+                If UsageStats(key) < 2 Then
+                    keysToDelete.Add key
+                End If
+            Next key
+            
+            ' Удаляем собранные ключи
+            For i = 1 To keysToDelete.Count
+                UsageStats.Remove keysToDelete(i)
+            Next i
+        End If
+        
+        ' Сохранение оптимизированных данных
+        SaveUsageStatistics
+        SaveMorphPatterns
+        
+        ' Перезагрузка правил
+        LoadRulesFromSheet
+        
+        MsgBox "Оптимизация завершена!" & vbCrLf & _
+               "Удалено неэффективных правил: " & deletedCount & vbCrLf & _
+               "Очищена статистика редко используемых элементов.", vbInformation
+    End If
+End Sub
+
+' ===== ДОПОЛНИТЕЛЬНЫЕ УТИЛИТЫ =====
+
+' Проверка целостности базы данных
+Sub CheckDatabaseIntegrity()
+    Dim issues As String
+    Dim issueCount As Integer
+    
+    issues = ""
+    issueCount = 0
+    
+    ' Проверка инициализации
+    If CustomDeclensions Is Nothing Then
+        issues = issues & "- Словарь CustomDeclensions не инициализирован" & vbCrLf
+        issueCount = issueCount + 1
+    End If
+    
+    If Not IsArray(Rules) Then
+        issues = issues & "- Массив Rules не загружен" & vbCrLf
+        issueCount = issueCount + 1
+    End If
+    
+    ' Проверка листов
+    Dim wsNames As Variant
+    wsNames = Array("DeclensionRules", "CustomDeclensions", "UsageStatistics")
+    
+    Dim i As Integer
+    For i = 0 To UBound(wsNames)
+        On Error Resume Next
+        Dim ws As Worksheet
+        Set ws = ThisWorkbook.Worksheets(wsNames(i))
+        If ws Is Nothing Then
+            issues = issues & "- Отсутствует лист: " & wsNames(i) & vbCrLf
+            issueCount = issueCount + 1
+        End If
+        On Error GoTo 0
+    Next i
+    
+    ' Вывод результатов
+    If issueCount = 0 Then
+        MsgBox "Проверка целостности завершена." & vbCrLf & _
+               "Проблем не обнаружено!", vbInformation, "Проверка базы данных"
+    Else
+        MsgBox "Обнаружено проблем: " & issueCount & vbCrLf & vbCrLf & _
+               issues & vbCrLf & _
+               "Рекомендуется выполнить ManualInit для исправления.", _
+               vbExclamation, "Проверка базы данных"
+    End If
+End Sub
+
+' Создание резервной копии
+Sub BackupDatabase()
+    Dim backupPath As String
+    Dim fso As Object
+    
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    
+    ' Создание папки для резервных копий
+    backupPath = ThisWorkbook.Path & "\Backups"
+    If Not fso.FolderExists(backupPath) Then
+        fso.CreateFolder backupPath
+    End If
+    
+    ' Сохранение копии файла
+    backupPath = backupPath & "\Backup_" & Format(Now, "yyyymmdd_hhmmss") & ".xlsm"
+    
+    ThisWorkbook.SaveCopyAs backupPath
+    
+    ' Дополнительно экспортируем базу знаний
+    Dim tempPath As String
+    tempPath = Replace(backupPath, ".xlsm", "_knowledge.txt")
+    
+    ' Временно меняем путь для экспорта
+    Application.EnableEvents = False
+    ExportKnowledgeBase
+    Application.EnableEvents = True
+    
+    MsgBox "Резервная копия создана:" & vbCrLf & backupPath, vbInformation
+End Sub
+
+' ===== ФУНКЦИИ ДЛЯ РАБОТЫ С ФОРМУЛАМИ =====
+
+' Добавление формул на активный лист
+Sub AddFormulasToActiveSheet()
+    Dim ws As Worksheet
+    Dim startRow As Long
+    
+    Set ws = ActiveSheet
+    
+    ' Находим подходящее место для примеров
+    startRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).row + 3
+    
+    ' Заголовок
+    ws.Cells(startRow, 1).Value = "ПРИМЕРЫ ИСПОЛЬЗОВАНИЯ ФОРМУЛ СКЛОНЕНИЯ:"
+    ws.Cells(startRow, 1).Font.Bold = True
+    ws.Cells(startRow, 1).Font.Size = 12
+    
+    startRow = startRow + 2
+    
+    ' Примеры
+    ws.Cells(startRow, 1).Value = "ФИО"
+    ws.Cells(startRow, 2).Value = "Формула"
+    ws.Cells(startRow, 3).Value = "Результат"
+    ws.Cells(startRow, 4).Value = "Описание"
+    ws.Range(ws.Cells(startRow, 1), ws.Cells(startRow, 4)).Font.Bold = True
+    
+    startRow = startRow + 1
+    ws.Cells(startRow, 1).Value = "Иванов Иван Иванович"
+    ws.Cells(startRow, 2).Formula = "=DeclineName(A" & startRow & ",2)"
+    ws.Cells(startRow, 3).Formula = "=B" & startRow
+    ws.Cells(startRow, 4).Value = "Родительный падеж"
+    
+    startRow = startRow + 1
+    ws.Cells(startRow, 1).Value = "Петрова Анна Сергеевна"
+    ws.Cells(startRow, 2).Formula = "=DeclineName(A" & startRow & ",3,""Ж"")"
+    ws.Cells(startRow, 3).Formula = "=B" & startRow
+    ws.Cells(startRow, 4).Value = "Дательный падеж (женский)"
+    
+    startRow = startRow + 1
+    ws.Cells(startRow, 1).Value = "Сидоров П.П."
+    ws.Cells(startRow, 2).Formula = "=DeclineNameSafe(A" & startRow & ",5)"
+    ws.Cells(startRow, 3).Formula = "=B" & startRow
+    ws.Cells(startRow, 4).Value = "Творительный падеж (безопасная функция)"
+    
+    ' Форматирование
+    ws.Columns("A:D").AutoFit
+    
+    MsgBox "Примеры формул добавлены на текущий лист", vbInformation
+End Sub
+
+' ===== ФИНАЛЬНАЯ ПРОВЕРКА СИСТЕМЫ =====
+
+Sub FinalSystemCheck()
+    Dim msg As String
+    
+    msg = "ПРОВЕРКА ГОТОВНОСТИ СИСТЕМЫ СКЛОНЕНИЯ" & vbCrLf & vbCrLf
+    
+    ' Проверка основных компонентов
+    msg = msg & "Компоненты системы:" & vbCrLf
+    msg = msg & IIf(Not CustomDeclensions Is Nothing, "?", "?") & " Словарь склонений" & vbCrLf
+    msg = msg & IIf(IsArray(Rules), "?", "?") & " Правила склонения" & vbCrLf
+    msg = msg & IIf(Not GenderClassifier Is Nothing, "?", "?") & " Классификатор пола" & vbCrLf
+    msg = msg & IIf(Not MorphPatterns Is Nothing, "?", "?") & " Морфологические паттерны" & vbCrLf
+    
+    msg = msg & vbCrLf & "Листы данных:" & vbCrLf
+    
+    Dim wsNames As Variant
+    wsNames = Array("DeclensionRules", "CustomDeclensions", "Склонение ФИО")
+    
+    Dim i As Integer
+    For i = 0 To UBound(wsNames)
+        On Error Resume Next
+        Dim ws As Worksheet
+        Set ws = Nothing
+        Set ws = ThisWorkbook.Worksheets(wsNames(i))
+        msg = msg & IIf(Not ws Is Nothing, "?", "?") & " " & wsNames(i) & vbCrLf
+        On Error GoTo 0
+    Next i
+    
+    msg = msg & vbCrLf & "Для начала работы:" & vbCrLf
+    msg = msg & "1. Запустите ManualInit" & vbCrLf
+    msg = msg & "2. Используйте CreateDeclensionInterface для создания интерфейса" & vbCrLf
+    msg = msg & "3. Или используйте формулу =DeclineNameSafe(""ФИО"", номер_падежа)"
+    
+    MsgBox msg, vbInformation, "Проверка системы"
+End Sub
+
